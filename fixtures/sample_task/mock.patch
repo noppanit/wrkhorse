@@ -1,0 +1,6 @@
+--- a/adder/mathy.py
++++ b/adder/mathy.py
+@@ -1,2 +1,2 @@
+ def add(left, right):
+-    return left - right
++    return left + right

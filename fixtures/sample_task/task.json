@@ -1,0 +1,5 @@
+{
+  "name": "sample-add",
+  "summary": "Fix the synthetic add function so it returns the sum of its two arguments. Do not change the test.",
+  "allowed_paths": ["adder/mathy.py"]
+}
