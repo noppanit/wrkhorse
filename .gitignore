@@ -1,0 +1,9 @@
+.venv/
+var/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
