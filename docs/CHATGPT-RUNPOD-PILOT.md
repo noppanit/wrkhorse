@@ -1,5 +1,20 @@
 # ChatGPT → Runpod model coding pilot
 
+## Verified live result: 2026-11-07
+
+**Important connection boundary:** The successful test was **ChatGPT → connected Runpod management/action plugin → Runpod Serverless llama.cpp worker → Qwen2.5-Coder-7B model → ChatGPT**. This is **NOT** ChatGPT talking directly to a local model on the owner's home machine. It is also **NOT** a remote invocation of the `wrkhorse serve` gateway or `wrkhorse worker` agent runtime. Those connections and workloads are separate milestones.
+
+- GitHub [PR #4](https://github.com/noppanit/wrkhorse/pull/4) was merged into `main` as commit `70e3dddb260e39e13785f779b10b2ce35d40d975`, after the latest Actions CI passed.
+- After the owner funded Runpod, the Hub endpoint was created successfully: `8ypa699kjdzzze`, named `wrkhorse-coder-pilot-20261107`; release `Jacob-ML/inference-worker` `v1.2.3`.
+- Confirmed endpoint configuration: `workers.min=0`, `workers.max=1`, `workers.idleTimeout=1`, `timeout=180000` ms, pool `ADA_24`, model argument alias `wrkhorse-coder`. The actual workers reported NVIDIA GeForce RTX 4090 GPUs.
+- **Job 1:** `d4bfaf64-134d-4f54-b4db-5e792d3b3f7e-u2`; `COMPLETED`, reported `executionTime=964` ms, `delayTime=83729` ms. Model generated the correct edit but put `@@ -1,3 +1,3 @@` on a two-line source, so the raw hunk counts were invalid. Record this as an *inference success but diff-validation failure*.
+- **Job 2:** `e08331db-b8ac-419b-a037-102cdd3bd3d6-u1`; `COMPLETED`, reported `executionTime=794` ms, `delayTime=22914` ms. The model returned a syntactically consistent two-line unified diff, `@@ -1,2 +1,2 @@`, replacing `return left - right` with `return left + right`. It was manually inspected against the fixture; **the code was not executed or merged** and the proposed validator was not invoked remotely on the response.
+- After both jobs, Runpod reported no queued/in-progress tasks. The worker list showed three `IDLE` entries, zero `RUNNING`. Provider documentation describes `IDLE` as scaled down/not billed in the console, but status and billing should be reconciled with a settled invoice. Despite `workers.max=1`, the worker history listed three idle records, so don't infer the maximum from the number of historical/idle records.
+- At the last billing query, Runpod's endpoint-specific and aggregate daily billing returned zero recorded charges/records. **This is reporting lag or no posted usage, not proof the two launches cost $0.** The $50 ceiling is still **not a provider-enforced hard cap**.
+- The endpoint has been **retained** for future explicitly requested tasks with min workers 0; it was not deleted. Re-check endpoint settings/active worker count and budget before another paid run. No continuous monitoring is configured.
+
+The integration proves that prompts sent from this ChatGPT conversation can reach the rented Runpod model and return code suggestions. It does **not** prove that an arbitrary coding task can be safely executed, tested, or committed by wrkhorse; those remain future work.
+
 Updated: 2026-11-07. This is a pilot of **model-generated diffs**, not an autonomous repo editor.
 
 ## What the user should be able to say
@@ -22,7 +37,7 @@ ChatGPT has a Runpod plugin with `run_endpoint`, `runsync_endpoint` and `get_job
 
 This first pilot intentionally accepts only the reviewed `sample-add` fixture. General repo editing, test execution, sandboxing, submitting PRs, and arbitrary shell commands are **not** offered.
 
-## Verified setup status
+## Historical pre-funding setup status (superseded by live result above)
 
 | Component | Result |
 | --- | --- |
@@ -36,7 +51,7 @@ This first pilot intentionally accepts only the reviewed `sample-add` fixture. G
 
 The user must add Runpod credit using the [Runpod Console](https://console.runpod.io/), ideally initially $10 with automatic top-ups disabled. Never paste payment data or API credentials into GitHub. Once funded, read-only verify the account and deploy only under the bounded settings below.
 
-## Bounded candidate configuration (NOT successfully deployed)
+## Bounded configuration (subsequently deployed as above)
 
 The attempt used Hub `Jacob-ML/inference-worker` (community-maintained [source](https://github.com/Jacob-ML/inference-worker)) running llama.cpp, *not* the full existing wrkhorse worker. Its non-streaming input format is `openai_route: "/v1/chat/completions"` and `openai_input` with `model`, `messages`, `stream: false`.
 
@@ -56,7 +71,7 @@ The `--alias` matches the `model` field in [../wrkhorse/runpod_pilot.py](../wrkh
 
 **Watch for failure to start.** The reviewed community `start.sh` script waits for a "listening" log message and may fail to exit promptly if the underlying model download/startup fails. Monitor worker logs and health; delete the endpoint immediately if workers loop or stay unhealthy. An idle timeout and per-job timeout are **not hard global spend guarantees**.
 
-## First live test after funding
+## First live test procedure (carried out, see actual results above)
 
 1. Before creating the endpoint, read aggregate Runpod billing. Confirm no existing workloads and available balance; choose GPU capacity and note the actual cost per second.
 2. Deploy the candidate endpoint with **min 0, max 1**. Confirm it appears in the Runpod plugin with that configuration, no GPU worker running until requested.
