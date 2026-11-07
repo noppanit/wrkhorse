@@ -1,5 +1,15 @@
 # Connections and ChatGPT coding-task workflow (2026-11-07)
 
+## Latest update — home MacBook Air route (2026-11-07)
+
+- The **Runpod-hosted** coding-model proof succeeded after this document was initially written: ChatGPT submitted two jobs to Serverless endpoint `8ypa699kjdzzze`, both completed; the second produced a valid sample-add diff. See [live Runpod notes](CHATGPT-RUNPOD-PILOT.md).
+- **ChatGPT → home MacBook Air Ollama is a separate connection and has NOT been tested.** An outbound-only relay is now proposed and implemented on a branch: ChatGPT creates a specifically labeled issue via GitHub, a locally running `wrkhorse.home_bridge` process polls GitHub, calls `http://127.0.0.1:11434/api/chat` on the Mac, validates a single allowlisted diff, posts a result comment to the issue, and ChatGPT reads it. See [home setup / proof checklist](HOME-MACBOOK-PILOT.md).
+- No inbound router ports, public local-model address, or extra cloud GPU are required for that route. The owner's Mac must run Ollama and the relay while awake. The relay does not run model-written code and cannot yet accept general coding tasks.
+- `qwen2.5-coder:0.5b` is the smallest listed coding model (~398 MB download); `qwen2.5-coder:1.5b` (~986 MB download) is the default pilot model for more reliable code diffs. Actual Mac performance remains unverified.
+- A $50 ceiling applies to the **separate Runpod experiment** as an owner policy; no provider-enforced cap has been set. Local inference does not consume Runpod credits, and this home relay does not disable the existing Runpod endpoint.
+
+The connection matrix below preserves **historical pre-funding status** and should not supersede the newer evidence above.
+
 This is a **verified-state log and implementation proposal**, not evidence of a deployed agent. It supersedes only the connection-status claims in older documents; the existing local-pilot safety constraints remain in force.
 
 ## User goal
