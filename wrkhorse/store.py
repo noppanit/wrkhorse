@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -51,8 +52,19 @@ class Store:
         self.stale_seconds = stale_seconds
         self.max_attempts = max_attempts
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as con:
-            con.executescript(SCHEMA)
+        last_error: sqlite3.OperationalError | None = None
+        for _ in range(20):
+            try:
+                with self.connect() as con:
+                    con.executescript(SCHEMA)
+                return
+            except sqlite3.OperationalError as exc:
+                last_error = exc
+                if "locked" not in str(exc).lower():
+                    raise
+                time.sleep(0.05)
+        if last_error is not None:
+            raise last_error
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

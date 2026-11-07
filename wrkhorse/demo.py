@@ -15,6 +15,7 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from wrkhorse.fixtures import REPO_ROOT, load_sample
+from wrkhorse.store import Store
 
 _TOKEN_ENV = "WRKHORSE_AUTH_TOKEN"
 
@@ -104,6 +105,28 @@ async def _roundtrip(db: Path, token: str, worker: subprocess.Popen[str], log_pa
     )
 
 
+def _wait_for_worker(
+    db: Path,
+    worker: subprocess.Popen[str],
+    log_path: Path,
+    token: str,
+) -> None:
+    store = Store(db, stale_seconds=30, max_attempts=2)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        exit_code = worker.poll()
+        if exit_code is not None:
+            raise RuntimeError(
+                f"worker exited {exit_code} during startup\n{_log_text(log_path, token)}"
+            )
+        if store.project_status()["worker_connected"]:
+            return
+        time.sleep(0.05)
+    raise RuntimeError(
+        f"worker did not connect\n{_log_text(log_path, token)}"
+    )
+
+
 def run_demo() -> str:
     import secrets
 
@@ -133,6 +156,7 @@ def run_demo() -> str:
         text=True,
     )
     try:
+        _wait_for_worker(db, worker, log_path, token)
         result = asyncio.run(_roundtrip(db, token, worker, log_path))
     except RuntimeError:
         raise
