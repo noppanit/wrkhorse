@@ -27,7 +27,7 @@ from wrkhorse.config import (
 from wrkhorse.diffutil import DiffError, apply_diff, parse_unified
 from wrkhorse.executor import run_unittest
 from wrkhorse.fixtures import load_sample
-from wrkhorse.inference import MAX_RESPONSE_BYTES, InferenceError, chat_endpoint, request_diff
+from wrkhorse.inference import InferenceError, chat_endpoint, request_diff
 from wrkhorse.logsetup import ScrubFilter, configure_logging
 from wrkhorse.sandbox import SandboxError, copy_tree
 from wrkhorse.store import Store, public_result, stamp, utcnow
@@ -462,20 +462,21 @@ class InferenceClientTests(unittest.TestCase):
         self.assertLess(progress["written"], progress["planned"])
         self.assertGreater(progress["written"], 0)
 
-    def test_gzip_oversize_counts_decoded_bytes(self):
-        import gzip
-        import io
-
-        raw = b"A" * 250_000
-        compressed = io.BytesIO()
-        with gzip.GzipFile(fileobj=compressed, mode="wb", compresslevel=9) as handle:
-            handle.write(raw)
-        payload = compressed.getvalue()
-        self.assertLess(len(payload), MAX_RESPONSE_BYTES)
-        progress = {"written": 0, "completed": False, "payload": payload}
-        with self.assertRaises(InferenceError) as caught:
-            self._serve_and_call(_gzip_oversize(progress), timeout=5.0)
-        self.assertEqual(str(caught.exception), "inference response too large")
+    def test_compressed_body_is_refused_before_it_is_read(self):
+        for encoding in ("gzip", "deflate", "br", "identity, gzip"):
+            with self.subTest(encoding=encoding):
+                progress = {
+                    "accept_encoding": None,
+                    "headers_sent": threading.Event(),
+                    "release_body": threading.Event(),
+                    "body_written": False,
+                }
+                with self.assertRaises(InferenceError) as caught:
+                    self._serve_and_call(_encoded_hold(progress, encoding), timeout=3.0)
+                self.assertEqual(str(caught.exception), "inference response failed")
+                self.assertEqual(progress["accept_encoding"], "identity")
+                self.assertTrue(progress["headers_sent"].is_set())
+                self.assertFalse(progress["body_written"])
 
     def _assert_deadline(self, handler):
         started = time.monotonic()
@@ -595,27 +596,23 @@ def _chunked_oversize(progress: dict):
     return Handler
 
 
-def _gzip_oversize(progress: dict):
-    payload = progress["payload"]
-
+def _encoded_hold(progress: dict, encoding: str):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802
+            progress["accept_encoding"] = self.headers.get("Accept-Encoding")
             _read_body(self)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Encoding", "gzip")
-            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Content-Encoding", encoding)
+            self.send_header("Content-Length", "1000000")
             self.end_headers()
+            progress["headers_sent"].set()
+            if not progress["release_body"].wait(0.3):
+                return
             try:
-                for index in range(0, len(payload), 64):
-                    piece = payload[index : index + 64]
-                    frame = f"{len(piece):x}\r\n".encode() + piece + b"\r\n"
-                    self.wfile.write(frame)
-                    self.wfile.flush()
-                    progress["written"] += len(piece)
-                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.write(b"x" * 1024)
                 self.wfile.flush()
-                progress["completed"] = True
+                progress["body_written"] = True
             except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
                 return
 

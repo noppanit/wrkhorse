@@ -14,7 +14,7 @@ Evidence is from this repository's tests and from the commands in the README. An
 | Path and symlink rejection | Ready, tested | `DiffTests.test_path_escape_and_symlink_are_refused` |
 | Test child does not inherit secrets | Ready, tested | `DiffTests.test_child_environment_drops_parent_secrets` |
 | Default worker refuses execution and model calls | Ready, tested | `WorkerPolicyTests.test_default_mode_refuses_without_running_tests_or_calling_model` |
-| OpenAI-compatible client | Partial | Local `127.0.0.1` only. One wall-clock deadline covers connect, headers, and body. Decoded body bytes are capped at 100,000 and the connection closes before a chunked or gzip body ends (`InferenceClientTests`). No vLLM and no GPU |
+| OpenAI-compatible client | Partial | Local `127.0.0.1` only. One wall-clock deadline covers connect, headers, and body. Identity bodies are capped at 100,000 bytes. Any other `Content-Encoding` is refused before the body is read (`InferenceClientTests`). No vLLM and no GPU |
 | Queue lock and stale attempt | Ready, tested | Separate worker processes share SQLite (`LeaseTests`). A running job's heartbeat recovers after a lock longer than five seconds. A second process reclaims a stale attempt; its artifacts stay under `attempt-<n>` and the first process cannot change them |
 | Nonblocking, not in this round | Recorded | HTTP 429 is implemented in the gateway and only unit-tested at the limiter. No extra connector, tunnel, or billing automation |
 | Inference result is a diff, not executed code | Ready, tested against a fake diff | `WorkerPolicyTests.test_inference_saves_diff_and_does_not_execute_it` |

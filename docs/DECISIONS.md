@@ -70,6 +70,6 @@ Rejected: a shared job directory plus a later cleanup. The stale writer must not
 
 Context: a per-read socket timeout treats a fast drip as progress. `response.read` can also keep receiving without returning to the caller's clock, and slow headers never reach the body loop.
 
-Choice: one `asyncio.wait_for` around the whole HTTP exchange (connect, headers, and body). Cancellation closes the client and the response. The body is streamed and decoded in bounded pieces; the connection is closed as soon as the decoded bytes pass 100,000, including gzip and deflate. Lease loss cancels that same task. There is no per-read deadline and no private timeout-flag reset.
+Choice: one `asyncio.wait_for` around the whole HTTP exchange (connect, headers, and body). Cancellation closes the client and the response. The request sends `Accept-Encoding: identity`. Any other `Content-Encoding` is refused from the headers, before the body is read. An identity body is streamed and the connection closes as soon as it passes 100,000 bytes. Lease loss cancels that same task. There is no per-read deadline and no gzip decoder.
 
-Rejected: repairing `read(4096)` with a shorter inactivity timeout. Bytes arriving faster than that timeout would still run past the budget.
+Rejected: a custom gzip or deflate decoder. Trailing bytes, extra members, and a short flush are easy to get wrong, and this slice does not need compressed model responses. Also rejected: repairing `read(4096)` with a shorter inactivity timeout.
