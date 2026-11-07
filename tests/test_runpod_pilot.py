@@ -38,7 +38,8 @@ class RunpodPilotTests(unittest.TestCase):
         self.assertLessEqual(message["max_tokens"], 1024)
         self.assertIn("adder/mathy.py", message["messages"][1]["content"])
         self.assertNotIn("api_key", repr(job).lower())
-        self.assertNotIn("token", repr(job).lower())
+        self.assertNotIn("WRKHORSE_AUTH_TOKEN", repr(job))
+        self.assertNotIn("RUNPOD_API_KEY", repr(job))
 
     def test_valid_reviewed_patch_returns_diff_without_execution(self):
         _manifest, patch, _root = load_sample()
