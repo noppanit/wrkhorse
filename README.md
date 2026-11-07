@@ -8,7 +8,7 @@ Local pilot for a queue that a Grok Bot can call, plus a separate worker that ca
 | Refused by default | Remote code execution. A subprocess is not a sandbox |
 | Not done | Real Grok Bot connector, OAuth, phone apps, GPU, vLLM, research worker, merges, deploys, purchases |
 
-Connection setup and budget status (2026-11-07): [docs/CONNECTIONS-2026-11-07.md](docs/CONNECTIONS-2026-11-07.md).
+Connection setup and budget status (2026-11-07): [docs/CONNECTIONS-2026-11-07.md](docs/CONNECTIONS-2026-11-07.md). ChatGPT → Runpod coding fixture pilot and funding blocker: [docs/CHATGPT-RUNPOD-PILOT.md](docs/CHATGPT-RUNPOD-PILOT.md).
 
 Details: [docs/READINESS.md](docs/READINESS.md), [docs/DECISIONS.md](docs/DECISIONS.md), [docs/GROK-BOT.md](docs/GROK-BOT.md), [docs/RUNPOD.md](docs/RUNPOD.md).
 
