@@ -198,7 +198,7 @@ def run_demo() -> str:
         diff.rstrip("\n"),
         "test_output:",
         output.rstrip("\n"),
-        f"artifact: var/demo/artifacts/{result['job_id']}/diff.patch",
+        f"artifact: var/demo/{body.get('artifact_dir')}/diff.patch",
         "",
     ]
     return "\n".join(lines)

@@ -318,5 +318,9 @@ def public_result(job: dict) -> dict:
     if job["status"] not in TERMINAL:
         return status
     result = json.loads(job["result_json"] or "{}")
+    expected = f"artifacts/{job['job_id']}/attempt-{job['attempts']}"
+    if result.get("artifact_dir") not in (None, expected):
+        result = dict(result)
+        result["artifact_dir"] = None
     status["result"] = result
     return status

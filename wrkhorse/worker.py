@@ -24,10 +24,19 @@ _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
 _ARTIFACTS = {"diff.patch", "test.txt", "result.json"}
 
 
-def _write_artifact(root: Path, job_id: str, name: str, text: str) -> None:
-    if _JOB_ID.fullmatch(job_id) is None or name not in _ARTIFACTS:
+def attempt_artifact_dir(job_id: str, attempt: int) -> str:
+    if _JOB_ID.fullmatch(job_id) is None or not isinstance(attempt, int) or attempt < 1:
         raise RuntimeError("refusing artifact path")
-    dest_dir = root / job_id
+    return f"artifacts/{job_id}/attempt-{attempt}"
+
+
+def _write_artifact(root: Path, job_id: str, attempt: int, name: str, text: str) -> None:
+    relative = attempt_artifact_dir(job_id, attempt)
+    if name not in _ARTIFACTS:
+        raise RuntimeError("refusing artifact path")
+    dest_dir = root / job_id / f"attempt-{attempt}"
+    if dest_dir != root.joinpath(*relative.split("/")[1:]):
+        raise RuntimeError("refusing artifact path")
     dest_dir.mkdir(parents=True, exist_ok=True)
     target = dest_dir / name
     resolved_root = root.resolve()
@@ -45,7 +54,11 @@ def _result(
     test_output: str | None,
     inference_called: bool,
     job_id: str,
+    attempts: int | None = None,
 ) -> dict:
+    recorded = None
+    if attempts is not None and (diff is not None or test_output is not None):
+        recorded = attempt_artifact_dir(job_id, attempts)
     return {
         "code": code,
         "diff": diff,
@@ -55,7 +68,7 @@ def _result(
         "inference_called": inference_called,
         "executes_model_generated_code": False,
         "subprocess_is_sandbox": False,
-        "artifact_dir": f"artifacts/{job_id}" if diff or test_output else None,
+        "artifact_dir": recorded,
     }
 
 
@@ -212,8 +225,9 @@ class Worker:
                 ),
             )
 
+        attempts = int(job["attempts"])
         if job["mode"] == "inference":
-            self._store_diff(job_id, diff_text, None)
+            self._store_diff(job_id, attempts, diff_text, None)
             return (
                 "diff_ready",
                 None,
@@ -225,6 +239,7 @@ class Worker:
                     test_output=None,
                     inference_called=True,
                     job_id=job_id,
+                    attempts=attempts,
                 ),
             )
 
@@ -242,7 +257,7 @@ class Worker:
                     job_id=job_id,
                 ),
             )
-        self._store_diff(job_id, diff_text, tests.output)
+        self._store_diff(job_id, int(job["attempts"]), diff_text, tests.output)
         if not tests.passed:
             code = "test_timeout" if tests.timed_out else "tests_failed"
             return (
@@ -256,6 +271,7 @@ class Worker:
                     test_output=tests.output,
                     inference_called=False,
                     job_id=job_id,
+                    attempts=int(job["attempts"]),
                 ),
             )
         return (
@@ -269,6 +285,7 @@ class Worker:
                 test_output=tests.output,
                 inference_called=False,
                 job_id=job_id,
+                attempts=int(job["attempts"]),
             ),
         )
 
@@ -288,11 +305,13 @@ class Worker:
             should_stop=should_stop,
         )
 
-    def _store_diff(self, job_id: str, diff_text: str, test_output: str | None) -> None:
+    def _store_diff(
+        self, job_id: str, attempt: int, diff_text: str, test_output: str | None
+    ) -> None:
         root = self.settings.artifact_root
-        _write_artifact(root, job_id, "diff.patch", diff_text)
+        _write_artifact(root, job_id, attempt, "diff.patch", diff_text)
         if test_output is not None:
-            _write_artifact(root, job_id, "test.txt", test_output)
+            _write_artifact(root, job_id, attempt, "test.txt", test_output)
 
 
 def worker_id() -> str:

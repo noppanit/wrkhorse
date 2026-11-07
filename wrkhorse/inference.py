@@ -1,21 +1,22 @@
 """OpenAI-compatible chat call used only by the worker.
 
-The timeout is an end-to-end deadline on a monotonic clock. A slow drip
-cannot extend it. Redirects are refused. The gateway token is never sent,
-and errors returned to the queue do not include the response body or the key.
+One asyncio.wait_for deadline covers connect, headers, and body. Cancelling
+that task closes the client and the response. A fast drip cannot extend the
+deadline by keeping the socket busy. Redirects are refused. Errors returned
+to the queue do not include the response body or the key.
 """
 
 from __future__ import annotations
 
-import http.client
+import asyncio
 import json
-import socket
-import time
 from collections.abc import Callable
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx2
+
 MAX_RESPONSE_BYTES = 100_000
-_READ_SLICE_SECONDS = 0.25
+_REDIRECTS = {301, 302, 303, 307, 308}
 
 
 class InferenceError(Exception):
@@ -52,57 +53,74 @@ def request_diff(
     if timeout <= 0:
         raise InferenceError("inference deadline exceeded")
     endpoint = chat_endpoint(base_url)
-    deadline = time.monotonic() + timeout
-    body = json.dumps(
-        {
-            "model": model,
-            "temperature": 0,
-            "max_tokens": 1024,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Reply with one unified diff and no other text. "
-                        "Do not include shell commands."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-        }
-    ).encode("utf-8")
-    parts = urlsplit(endpoint)
-    port = parts.port or (443 if parts.scheme == "https" else 80)
-    conn: http.client.HTTPConnection | None = None
-    try:
-        conn = _connect(parts.scheme, parts.hostname or "", port, deadline, should_stop)
-        _check(deadline, should_stop)
-        conn.request(
-            "POST",
-            parts.path or "/",
-            body=body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-                "Connection": "close",
+    body = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": 1024,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Reply with one unified diff and no other text. "
+                    "Do not include shell commands."
+                ),
             },
-        )
-        _arm(conn, deadline, should_stop)
-        response = conn.getresponse()
-        if response.status in {301, 302, 303, 307, 308}:
-            raise InferenceError("inference redirects are refused")
-        raw = _read_bounded(response, conn, deadline, should_stop)
-        if response.status != 200:
-            raise InferenceError("inference request failed")
-    except InferenceError:
-        raise
-    except Exception as exc:
-        raise InferenceError("inference request failed") from exc
+            {"role": "user", "content": prompt},
+        ],
+    }
+    try:
+        return asyncio.run(_bounded(endpoint, api_key, body, timeout, should_stop))
+    except TimeoutError as exc:
+        raise InferenceError("inference deadline exceeded") from exc
+
+
+async def _bounded(endpoint, api_key, body, timeout, should_stop) -> str:
+    task = asyncio.create_task(_exchange(endpoint, api_key, body))
+    try:
+        return await asyncio.wait_for(_finish_or_stop(task, should_stop), timeout)
     finally:
-        if conn is not None:
-            conn.close()
-    if len(raw) > MAX_RESPONSE_BYTES:
-        raise InferenceError("inference response too large")
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+async def _finish_or_stop(task: asyncio.Task[str], should_stop) -> str:
+    while not task.done():
+        if should_stop is not None and should_stop():
+            task.cancel()
+            raise InferenceError("inference lease lost")
+        await asyncio.wait({task}, timeout=0.05)
+    return task.result()
+
+
+async def _exchange(endpoint: str, api_key: str, body: dict) -> str:
+    # No client-side read timeout. The outer wait_for is the only deadline.
+    client = httpx2.AsyncClient(timeout=None, follow_redirects=False, trust_env=False)
+    response = None
+    try:
+        response = await client.post(
+            endpoint,
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+        )
+        if response.status_code in _REDIRECTS:
+            raise InferenceError("inference redirects are refused")
+        if response.status_code != 200:
+            raise InferenceError("inference request failed")
+        raw = await response.aread()
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise InferenceError("inference response too large")
+        return _parse_content(raw)
+    finally:
+        if response is not None:
+            await response.aclose()
+        await client.aclose()
+
+
+def _parse_content(raw: bytes) -> str:
     try:
         payload = json.loads(raw.decode("utf-8"))
         content = payload["choices"][0]["message"]["content"]
@@ -111,63 +129,3 @@ def request_diff(
     if not isinstance(content, str) or not content.strip():
         raise InferenceError("inference response was empty")
     return content
-
-
-def _connect(scheme, host, port, deadline, should_stop):
-    _check(deadline, should_stop)
-    if scheme == "https":
-        conn = http.client.HTTPSConnection(host, port, timeout=_remaining(deadline))
-    else:
-        conn = http.client.HTTPConnection(host, port, timeout=_remaining(deadline))
-    try:
-        conn.connect()
-    except (TimeoutError, socket.timeout) as exc:
-        conn.close()
-        if time.monotonic() >= deadline:
-            raise InferenceError("inference deadline exceeded") from exc
-        raise InferenceError("inference request failed") from exc
-    return conn
-
-
-def _read_bounded(response, conn, deadline, should_stop) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
-    while total <= MAX_RESPONSE_BYTES:
-        _arm(conn, deadline, should_stop)
-        try:
-            block = response.read(4096)
-        except (TimeoutError, socket.timeout, OSError) as exc:
-            if isinstance(exc, OSError) and "timed out" not in str(exc).lower():
-                raise
-            raw = getattr(getattr(response, "fp", None), "raw", None)
-            if raw is not None:
-                raw._timeout_occurred = False
-            continue
-        if not block:
-            break
-        total += len(block)
-        if total > MAX_RESPONSE_BYTES:
-            raise InferenceError("inference response too large")
-        chunks.append(block)
-    return b"".join(chunks)
-
-
-def _arm(conn, deadline, should_stop) -> None:
-    _check(deadline, should_stop)
-    sock = getattr(conn, "sock", None)
-    if sock is not None:
-        sock.settimeout(min(_READ_SLICE_SECONDS, _remaining(deadline)))
-
-
-def _check(deadline: float, should_stop: Callable[[], bool] | None) -> None:
-    if should_stop is not None and should_stop():
-        raise InferenceError("inference lease lost")
-    if time.monotonic() >= deadline:
-        raise InferenceError("inference deadline exceeded")
-
-
-def _remaining(deadline: float) -> float:
-    left = deadline - time.monotonic()
-    if left <= 0:
-        raise InferenceError("inference deadline exceeded")
-    return left

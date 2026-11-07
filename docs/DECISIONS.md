@@ -58,10 +58,18 @@ Choice: each store call retries a busy lock at most four times, one second each,
 
 Rejected: an unlimited retry or a multi-minute busy timeout. The task still ends on the test timeout, the inference deadline, or the attempt cap.
 
+## 2026-11-07 — Artifacts are per attempt
+
+Context: the queue fences `finish` by attempt, but both attempts wrote `artifacts/<job-id>/diff.patch`. The stale attempt could replace the winner's file before its finish was rejected.
+
+Choice: files go to `artifacts/<job-id>/attempt-<n>/`. Only a fenced finish stores that path. Result reads keep `artifact_dir` only when it is exactly the winning attempt.
+
+Rejected: a shared job directory plus a later cleanup. The stale writer must not need the winner's path at all.
+
 ## 2026-11-07 — Inference timeout is the whole call
 
-Context: `urlopen(..., timeout=)` stops on socket inactivity. A slow drip keeps the read, and therefore the heartbeat, running past the intended budget.
+Context: a per-read socket timeout treats a fast drip as progress. `response.read` can also keep receiving without returning to the caller's clock, and slow headers never reach the body loop.
 
-Choice: a monotonic deadline around connect, write, and each read. The socket timeout is only a short slice so the loop can notice the deadline and close the connection. The read stays on the worker thread.
+Choice: one `asyncio.wait_for` around the whole HTTP exchange (connect, headers, and body). Cancellation closes the client and the response. Lease loss cancels that same task. There is no per-read deadline and no private timeout-flag reset.
 
-Rejected: a helper thread per request. A stuck drip must not leave threads behind.
+Rejected: repairing `read(4096)` with a shorter inactivity timeout. Bytes arriving faster than that timeout would still run past the budget.

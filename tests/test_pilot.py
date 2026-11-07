@@ -321,7 +321,7 @@ class WorkerPolicyTests(unittest.TestCase):
             self.assertTrue(result["tests_passed"])
             self.assertIn("+    return left + right", result["diff"])
             self.assertFalse(result["inference_called"])
-            artifact = Path(raw) / "artifacts" / job["job_id"] / "diff.patch"
+            artifact = Path(raw) / "artifacts" / job["job_id"] / "attempt-1" / "diff.patch"
             self.assertTrue(artifact.is_file())
 
     def test_inference_saves_diff_and_does_not_execute_it(self):
@@ -443,59 +443,103 @@ class InferenceClientTests(unittest.TestCase):
         with self.assertRaises(InferenceError):
             chat_endpoint("http://user:secret@127.0.0.1/v1")
 
-    def test_slow_drip_hits_end_to_end_deadline_without_new_threads(self):
-        stop = threading.Event()
+    def test_fast_drip_body_cannot_extend_the_deadline(self):
+        self._assert_deadline(self._FastBody)
 
-        class Drip(BaseHTTPRequestHandler):
-            def do_POST(self):  # noqa: N802
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if length:
-                        self.rfile.read(length)
-                    self.send_response(200)
-                    self.send_header("Content-Length", "100000")
-                    self.end_headers()
-                    for _ in range(40):
-                        if stop.is_set():
-                            return
-                        time.sleep(0.3)
-                        self.wfile.write(b"x")
-                        self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
-                    return
+    def test_slow_headers_cannot_extend_the_deadline(self):
+        self._assert_deadline(self._SlowHeaders)
 
-            def log_message(self, _format, *_args):
-                return
+    def test_fragmented_response_completes_within_the_deadline(self):
+        content = self._serve_and_call(self._Fragmented, timeout=3.0)
+        self.assertIn("--- a/adder/mathy.py", content)
 
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Drip)
+    def _assert_deadline(self, handler):
+        started = time.monotonic()
+        with self.assertRaises(InferenceError) as caught:
+            self._serve_and_call(handler, timeout=1.0)
+        self.assertEqual(str(caught.exception), "inference deadline exceeded")
+        self.assertLess(time.monotonic() - started, 2.5)
+
+    def _serve_and_call(self, handler, timeout: float) -> str:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            before_ids = {thread.ident for thread in threading.enumerate()}
-            started = time.monotonic()
-            with self.assertRaises(InferenceError) as caught:
-                request_diff(
-                    base_url=f"http://127.0.0.1:{port}/v1",
-                    api_key=INFERENCE_KEY,
-                    model="fixture-model",
-                    prompt="fix add",
-                    timeout=1.0,
-                )
-            elapsed = time.monotonic() - started
-            time.sleep(0.6)
-            leaked = [
-                thread.name
-                for thread in threading.enumerate()
-                if thread.ident not in before_ids and thread.is_alive()
-            ]
+            return request_diff(
+                base_url=f"http://127.0.0.1:{port}/v1",
+                api_key=INFERENCE_KEY,
+                model="fixture-model",
+                prompt="fix add",
+                timeout=timeout,
+            )
         finally:
-            stop.set()
             server.shutdown()
             server.server_close()
-        self.assertEqual(str(caught.exception), "inference deadline exceeded")
-        self.assertLess(elapsed, 2.5)
-        self.assertEqual(leaked, [])
+
+    class _FastBody(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            _read_body(self)
+            self.send_response(200)
+            self.send_header("Content-Length", "5000")
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            try:
+                for _ in range(5000):
+                    time.sleep(0.1)
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+                return
+
+        def log_message(self, _format, *_args):
+            return
+
+    class _SlowHeaders(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            _read_body(self)
+            raw = (
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Content-Length: 2\r\nConnection: close\r\n\r\n{}"
+            )
+            try:
+                for index in range(len(raw)):
+                    time.sleep(0.1)
+                    self.wfile.write(raw[index : index + 1])
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+                return
+
+        def log_message(self, _format, *_args):
+            return
+
+    class _Fragmented(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            _read_body(self)
+            payload = json.dumps(
+                {"choices": [{"message": {"content": "--- a/adder/mathy.py\n+++ b/adder/mathy.py\n"}}]}
+            ).encode()
+            raw = (
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                + f"Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n".encode()
+                + payload
+            )
+            try:
+                for index in range(0, len(raw), 7):
+                    self.wfile.write(raw[index : index + 7])
+                    self.wfile.flush()
+                    time.sleep(0.01)
+            except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+                return
+
+        def log_message(self, _format, *_args):
+            return
+
+
+def _read_body(handler: BaseHTTPRequestHandler) -> None:
+    length = int(handler.headers.get("Content-Length", "0"))
+    if length:
+        handler.rfile.read(length)
 
 
 class RedirectHandler(BaseHTTPRequestHandler):
@@ -642,47 +686,161 @@ class LeaseTests(unittest.TestCase):
             saved = json.loads(store.get(job["job_id"])["result_json"])
         self.assertEqual(saved["code"], "tests_passed")
 
-    def test_heartbeat_survives_lock_longer_than_five_seconds(self):
-        from wrkhorse.executor import TestRun
-
+    def test_running_worker_process_recovers_heartbeat_after_long_lock(self):
+        patch = load_sample()[1]
         with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            settings = _worker_settings(root, "trusted-local-demo")
-            store = Store(settings.db_path, stale_seconds=30, max_attempts=2)
-            gate = threading.Event()
+            db = Path(raw) / "q.sqlite"
+            release = threading.Event()
+            started = threading.Event()
+            posts = {"n": 0}
 
-            def hold(*_args, **_kwargs):
-                gate.wait(20)
-                return TestRun(0, "ok\n", False)
+            class Hold(BaseHTTPRequestHandler):
+                def do_POST(self):  # noqa: N802
+                    _read_body(self)
+                    posts["n"] += 1
+                    started.set()
+                    release.wait(30)
+                    _send_json(self, patch)
 
-            worker = Worker(settings, store, "worker-a")
-            done = threading.Thread(target=lambda: _patch_and_run(worker), daemon=True)
-            with _patch("wrkhorse.worker.run_unittest", hold):
-                done.start()
-                deadline = time.monotonic() + 10
+                def log_message(self, _format, *_args):
+                    return
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Hold)
+            port = server.server_address[1]
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            env = _process_env(
+                db,
+                WRKHORSE_EXECUTION_MODE="trusted-local-demo",
+                WRKHORSE_INFERENCE_BASE_URL=f"http://127.0.0.1:{port}/v1",
+                WRKHORSE_INFERENCE_API_KEY=INFERENCE_KEY,
+                WRKHORSE_INFERENCE_MODEL="fixture-model",
+                WRKHORSE_INFERENCE_TIMEOUT_SECONDS="30",
+                WRKHORSE_CLAIM_STALE_SECONDS="30",
+            )
+            proc = _spawn_worker(env)
+            store = Store(db, stale_seconds=30, max_attempts=2)
+            try:
+                store.enqueue("sample-add", "inference")
+                self.assertTrue(started.wait(10), "inference request did not start")
+                self.assertIsNone(proc.poll())
+                with store.connect() as con:
+                    seen_before = con.execute("SELECT claimed_at FROM tasks").fetchone()["claimed_at"]
+                _hold_write_lock(db, 6)
+                self.assertIsNone(proc.poll())
+                recovered = False
+                deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
-                    job = _only_or_none(store)
-                    if job is not None and job["status"] == "running":
+                    self.assertIsNone(proc.poll())
+                    with store.connect() as con:
+                        seen_after = con.execute(
+                            "SELECT claimed_at FROM tasks"
+                        ).fetchone()["claimed_at"]
+                    if seen_after > seen_before:
+                        recovered = True
                         break
-                    time.sleep(0.05)
-                else:
-                    gate.set()
-                    self.fail("worker did not claim")
-                con = sqlite3.connect(store.path, timeout=1, isolation_level=None)
-                con.execute("BEGIN IMMEDIATE")
-                time.sleep(6)
-                con.execute("COMMIT")
-                con.close()
-                time.sleep(3)
-                job = _only(store)
-                seen = job["claimed_at"]
-                gate.set()
-                done.join(10)
-            self.assertEqual(job["status"], "running")
-            from datetime import datetime
+                    time.sleep(0.1)
+                self.assertTrue(recovered, "heartbeat did not resume after the lock")
+                release.set()
+                job = _wait_terminal(store, 15)
+                self.assertEqual(job["status"], "diff_ready")
+                self.assertEqual(job["attempts"], 1)
+                self.assertEqual(posts["n"], 1)
+                recorded = json.loads(job["result_json"])["artifact_dir"]
+                self.assertEqual(recorded, f"artifacts/{job['job_id']}/attempt-1")
+                winner = Path(raw) / recorded / "diff.patch"
+                self.assertEqual(winner.read_text(encoding="utf-8"), patch)
+                self.assertFalse((Path(raw) / "artifacts" / job["job_id"] / "diff.patch").exists())
+            finally:
+                release.set()
+                _stop_process(proc)
+                server.shutdown()
+                server.server_close()
 
-            age = datetime.now().astimezone() - datetime.fromisoformat(seen)
-            self.assertLess(age.total_seconds(), 4)
+    def test_separate_processes_reclaim_without_overwriting_winner_artifacts(self):
+        import signal
+
+        patch = load_sample()[1]
+        with tempfile.TemporaryDirectory() as raw:
+            db = Path(raw) / "q.sqlite"
+            release_first = threading.Event()
+            first_started = threading.Event()
+
+            class Gate(BaseHTTPRequestHandler):
+                def do_POST(self):  # noqa: N802
+                    _read_body(self)
+                    if not first_started.is_set():
+                        first_started.set()
+                        release_first.wait(30)
+                    _send_json(self, patch)
+
+                def log_message(self, _format, *_args):
+                    return
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Gate)
+            port = server.server_address[1]
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            env = _process_env(
+                db,
+                WRKHORSE_EXECUTION_MODE="trusted-local-demo",
+                WRKHORSE_INFERENCE_BASE_URL=f"http://127.0.0.1:{port}/v1",
+                WRKHORSE_INFERENCE_API_KEY=INFERENCE_KEY,
+                WRKHORSE_INFERENCE_MODEL="fixture-model",
+                WRKHORSE_INFERENCE_TIMEOUT_SECONDS="30",
+                WRKHORSE_CLAIM_STALE_SECONDS="2",
+                WRKHORSE_MAX_ATTEMPTS="2",
+            )
+            first = _spawn_worker(env)
+            store = Store(db, stale_seconds=2, max_attempts=2)
+            second = None
+            try:
+                store.enqueue("sample-add", "inference")
+                self.assertTrue(first_started.wait(10), "first worker did not call the model")
+                self.assertIsNone(first.poll())
+                os.kill(first.pid, signal.SIGSTOP)
+                time.sleep(3)
+                second = _spawn_worker(env)
+                job = _wait_terminal(store, 15)
+                self.assertEqual(job["claimed_by"], f"worker-{second.pid}")
+                self.assertEqual(job["attempts"], 2)
+                self.assertEqual(job["status"], "diff_ready")
+                recorded = json.loads(job["result_json"])["artifact_dir"]
+                self.assertEqual(recorded, f"artifacts/{job['job_id']}/attempt-2")
+                winner = Path(raw) / recorded / "diff.patch"
+                winner_bytes = winner.read_bytes()
+                self.assertFalse(
+                    store.finish(
+                        job["job_id"],
+                        f"worker-{first.pid}",
+                        1,
+                        status="succeeded",
+                        error=None,
+                        result={"code": "stale", "artifact_dir": f"artifacts/{job['job_id']}/attempt-1"},
+                    )
+                )
+                self.assertFalse(store.touch(job["job_id"], f"worker-{first.pid}", 1))
+                release_first.set()
+                os.kill(first.pid, signal.SIGCONT)
+                time.sleep(2)
+                self.assertEqual(winner.read_bytes(), winner_bytes)
+                self.assertEqual(store.get(job["job_id"])["result_json"], job["result_json"])
+                stale_file = Path(raw) / "artifacts" / job["job_id"] / "attempt-1" / "diff.patch"
+                if stale_file.exists():
+                    self.assertNotEqual(stale_file.resolve(), winner.resolve())
+                self.assertFalse((Path(raw) / "artifacts" / job["job_id"] / "diff.patch").exists())
+            finally:
+                release_first.set()
+                if first.poll() is None:
+                    try:
+                        os.kill(first.pid, signal.SIGCONT)
+                    except ProcessLookupError:
+                        pass
+                _stop_process(first)
+                if second is not None:
+                    _stop_process(second)
+                server.shutdown()
+                server.server_close()
 
     def test_separate_worker_process_survives_six_second_lock(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -746,9 +904,94 @@ class LeaseTests(unittest.TestCase):
                     proc.stdout.close()
 
 
-def _patch_and_run(worker: Worker) -> None:
-    worker.store.enqueue("sample-add", "mock")
-    worker.once()
+def _process_env(db: Path, **extra: str) -> dict[str, str]:
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(db.parent),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONUNBUFFERED": "1",
+        "WRKHORSE_DB": str(db),
+        "WRKHORSE_POLL_SECONDS": "0.05",
+    }
+    library = os.environ.get("LD_LIBRARY_PATH")
+    if library:
+        env["LD_LIBRARY_PATH"] = library
+    env.update(extra)
+    return env
+
+
+def _spawn_worker(env: dict[str, str]) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [sys.executable, "-m", "wrkhorse", "worker"],
+        cwd=REPO,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+
+def _stop_process(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+    if proc.stdout is not None:
+        proc.stdout.close()
+
+
+def _output(proc: subprocess.Popen[str]) -> str:
+    if proc.stdout is None:
+        return ""
+    return proc.stdout.read()
+
+
+def _wait_terminal(store: Store, seconds: float) -> dict:
+    deadline = time.monotonic() + seconds
+    job = None
+    while time.monotonic() < deadline:
+        job = _only_or_none(store)
+        if job is not None and job["status"] in {"succeeded", "diff_ready", "failed", "refused"}:
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"job did not finish: {job}")
+
+
+def _send_json(handler: BaseHTTPRequestHandler, content: str) -> None:
+    raw = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+    try:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(raw)))
+        handler.end_headers()
+        handler.wfile.write(raw)
+    except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+        return
+
+
+def _hold_write_lock(db: Path, seconds: float) -> None:
+    """Hold the write lock without resetting the wait each time another writer commits."""
+    con = sqlite3.connect(db, timeout=0, isolation_level=None)
+    deadline = time.monotonic() + 3
+    while True:
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            break
+        except sqlite3.OperationalError:
+            if time.monotonic() > deadline:
+                con.close()
+                raise AssertionError("could not acquire the database write lock")
+            time.sleep(0.05)
+    try:
+        time.sleep(seconds)
+    finally:
+        con.execute("COMMIT")
+        con.close()
 
 
 def _only_or_none(store: Store) -> dict | None:
