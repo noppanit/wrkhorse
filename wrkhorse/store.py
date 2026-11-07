@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Iterator
 
 HEARTBEAT_FRESH_SECONDS = 15
+# One store call waits at most four one-second lock attempts, plus this backoff.
+# That stays under the old five-second failure and does not grow with the task.
+_LOCK_BACKOFF_SECONDS = (0.0, 0.05, 0.1, 0.2)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -46,33 +49,47 @@ def stamp(moment: datetime | None = None) -> str:
     return (moment or utcnow()).isoformat()
 
 
+def is_busy(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
 class Store:
     def __init__(self, path: Path, *, stale_seconds: float, max_attempts: int) -> None:
         self.path = Path(path)
         self.stale_seconds = stale_seconds
         self.max_attempts = max_attempts
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        last_error: sqlite3.OperationalError | None = None
-        for _ in range(20):
+        self._retry(self._migrate)
+
+    def _migrate(self) -> None:
+        with self.connect() as con:
+            con.executescript(SCHEMA)
+
+    def _retry(self, fn):
+        last: sqlite3.OperationalError | None = None
+        for delay in _LOCK_BACKOFF_SECONDS:
+            if delay:
+                time.sleep(delay)
             try:
-                with self.connect() as con:
-                    con.executescript(SCHEMA)
-                return
+                return fn()
             except sqlite3.OperationalError as exc:
-                last_error = exc
-                if "locked" not in str(exc).lower():
+                if not is_busy(exc):
                     raise
-                time.sleep(0.05)
-        if last_error is not None:
-            raise last_error
+                last = exc
+        if last is not None:
+            raise last
+        raise sqlite3.OperationalError("database is locked")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        con = sqlite3.connect(self.path, timeout=5, isolation_level=None)
+        con = sqlite3.connect(self.path, timeout=1, isolation_level=None)
         con.row_factory = sqlite3.Row
         try:
             con.execute("PRAGMA journal_mode=WAL")
-            con.execute("PRAGMA busy_timeout=5000")
+            con.execute("PRAGMA busy_timeout=1000")
             con.execute("PRAGMA foreign_keys=ON")
             yield con
         finally:
@@ -83,31 +100,44 @@ class Store:
             raise ValueError("unknown task or mode")
         job_id = uuid.uuid4().hex
         now = stamp()
-        with self.connect() as con:
-            con.execute(
-                """
-                INSERT INTO tasks (
-                    job_id, task_name, mode, status, attempts, max_attempts,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?)
-                """,
-                (job_id, task_name, mode, self.max_attempts, now, now),
-            )
-        job = self.get(job_id)
-        if job is None:
-            raise RuntimeError("queued job was not stored")
-        return job
+
+        def op() -> dict:
+            with self.connect() as con:
+                con.execute(
+                    """
+                    INSERT INTO tasks (
+                        job_id, task_name, mode, status, attempts, max_attempts,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?)
+                    """,
+                    (job_id, task_name, mode, self.max_attempts, now, now),
+                )
+                row = con.execute("SELECT * FROM tasks WHERE job_id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise RuntimeError("queued job was not stored")
+            return dict(row)
+
+        return self._retry(op)
 
     def get(self, job_id: str) -> dict | None:
-        with self.connect() as con:
-            row = con.execute("SELECT * FROM tasks WHERE job_id = ?", (job_id,)).fetchone()
-        return dict(row) if row is not None else None
+        def op() -> dict | None:
+            with self.connect() as con:
+                row = con.execute("SELECT * FROM tasks WHERE job_id = ?", (job_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+        return self._retry(op)
 
     def claim(self, worker_id: str) -> dict | None:
         """Claim one queued job, or a stale running job under the attempt cap.
 
         A running job whose claim is still fresh is invisible to this call.
         """
+        def op() -> dict | None:
+            return self._claim_once(worker_id)
+
+        return self._retry(op)
+
+    def _claim_once(self, worker_id: str) -> dict | None:
         now_dt = utcnow()
         now = stamp(now_dt)
         stale_before = stamp(now_dt - timedelta(seconds=self.stale_seconds))
@@ -169,57 +199,75 @@ class Store:
                 raise
         return claimed
 
-    def touch(self, job_id: str, worker_id: str) -> None:
-        now = stamp()
-        with self.connect() as con:
-            con.execute(
-                """
-                UPDATE tasks
-                SET claimed_at = ?, updated_at = ?
-                WHERE job_id = ? AND claimed_by = ? AND status = 'running'
-                """,
-                (now, now, job_id, worker_id),
-            )
+    def touch(self, job_id: str, worker_id: str, attempts: int) -> bool:
+        """Renew one claim. False means this attempt no longer owns the job."""
+
+        def op() -> bool:
+            now = stamp()
+            with self.connect() as con:
+                updated = con.execute(
+                    """
+                    UPDATE tasks
+                    SET claimed_at = ?, updated_at = ?
+                    WHERE job_id = ? AND claimed_by = ? AND attempts = ? AND status = 'running'
+                    """,
+                    (now, now, job_id, worker_id, attempts),
+                )
+            return updated.rowcount == 1
+
+        return self._retry(op)
 
     def finish(
         self,
         job_id: str,
         worker_id: str,
+        attempts: int,
         *,
         status: str,
         error: str | None,
         result: dict,
     ) -> bool:
+        """Finish only the attempt that still owns the job."""
         if status not in TERMINAL:
             raise ValueError("not a terminal status")
-        now = stamp()
         payload = json.dumps(result, sort_keys=True)
-        with self.connect() as con:
-            updated = con.execute(
-                """
-                UPDATE tasks
-                SET status = ?, error = ?, result_json = ?, updated_at = ?
-                WHERE job_id = ? AND claimed_by = ? AND status = 'running'
-                """,
-                (status, error, payload, now, job_id, worker_id),
-            )
-        return updated.rowcount == 1
+
+        def op() -> bool:
+            now = stamp()
+            with self.connect() as con:
+                updated = con.execute(
+                    """
+                    UPDATE tasks
+                    SET status = ?, error = ?, result_json = ?, updated_at = ?
+                    WHERE job_id = ? AND claimed_by = ? AND attempts = ? AND status = 'running'
+                    """,
+                    (status, error, payload, now, job_id, worker_id, attempts),
+                )
+            return updated.rowcount == 1
+
+        return self._retry(op)
 
     def heartbeat(self, execution_mode: str) -> None:
-        now = stamp()
-        with self.connect() as con:
-            con.execute(
-                """
-                INSERT INTO heartbeats (id, execution_mode, last_seen)
-                VALUES (1, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    execution_mode = excluded.execution_mode,
-                    last_seen = excluded.last_seen
-                """,
-                (execution_mode, now),
-            )
+        def op() -> None:
+            now = stamp()
+            with self.connect() as con:
+                con.execute(
+                    """
+                    INSERT INTO heartbeats (id, execution_mode, last_seen)
+                    VALUES (1, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        execution_mode = excluded.execution_mode,
+                        last_seen = excluded.last_seen
+                    """,
+                    (execution_mode, now),
+                )
+
+        self._retry(op)
 
     def project_status(self) -> dict:
+        return self._retry(self._project_status_once)
+
+    def _project_status_once(self) -> dict:
         with self.connect() as con:
             row = con.execute("SELECT * FROM heartbeats WHERE id = 1").fetchone()
         connected = False

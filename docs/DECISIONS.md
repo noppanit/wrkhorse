@@ -49,3 +49,19 @@ Context: the gateway and the model server are different trust boundaries. vLLM's
 Choice: `WRKHORSE_AUTH_TOKEN` is read by the gateway only. `WRKHORSE_INFERENCE_API_KEY` is read by the worker only. The worker sends it to the configured `/v1` URL and refuses redirects and URLs that embed a secret. The model port is not part of the public MCP URL.
 
 Rejected: one shared bearer for both, and rejected publishing the model server through the Runpod HTTP proxy.
+
+## 2026-11-07 — Lock loss must not drop the lease or finish a newer attempt
+
+Context: a SQLite lock longer than the connection timeout raised `OperationalError` out of the idle loop and out of the heartbeat thread. The claim timestamp then went stale, another worker could take the job, and the first worker could still write a result.
+
+Choice: each store call retries a busy lock at most four times, one second each, with a short backoff. The worker loop and the heartbeat thread catch a remaining busy error and stay alive. `touch` and `finish` include the attempt number, so a worker that lost the claim cannot finish the attempt a later worker owns.
+
+Rejected: an unlimited retry or a multi-minute busy timeout. The task still ends on the test timeout, the inference deadline, or the attempt cap.
+
+## 2026-11-07 — Inference timeout is the whole call
+
+Context: `urlopen(..., timeout=)` stops on socket inactivity. A slow drip keeps the read, and therefore the heartbeat, running past the intended budget.
+
+Choice: a monotonic deadline around connect, write, and each read. The socket timeout is only a short slice so the loop can notice the deadline and close the connection. The read stays on the worker thread.
+
+Rejected: a helper thread per request. A stuck drip must not leave threads behind.

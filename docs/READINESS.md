@@ -14,7 +14,8 @@ Evidence is from this repository's tests and from the commands in the README. An
 | Path and symlink rejection | Ready, tested | `DiffTests.test_path_escape_and_symlink_are_refused` |
 | Test child does not inherit secrets | Ready, tested | `DiffTests.test_child_environment_drops_parent_secrets` |
 | Default worker refuses execution and model calls | Ready, tested | `WorkerPolicyTests.test_default_mode_refuses_without_running_tests_or_calling_model` |
-| OpenAI-compatible client | Partial | Local `127.0.0.1` stub only, including a refused redirect (`InferenceClientTests`). No vLLM and no GPU |
+| OpenAI-compatible client | Partial | Local `127.0.0.1` stub only, including a refused redirect and a slow-drip deadline (`InferenceClientTests`). No vLLM and no GPU |
+| Queue lock longer than five seconds | Ready, tested | Idle worker process stays up; heartbeat thread keeps the claim; a stale attempt cannot finish (`LeaseTests`) |
 | Inference result is a diff, not executed code | Ready, tested against a fake diff | `WorkerPolicyTests.test_inference_saves_diff_and_does_not_execute_it` |
 | Real isolation (container / gVisor / user namespace) | Not done | No code. Remote execution remains refused |
 | Research worker | Not done | No module. `get_project_status` reports `research_worker: not_implemented` |

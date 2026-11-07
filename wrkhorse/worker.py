@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import time
@@ -16,7 +17,7 @@ from wrkhorse.fixtures import load_sample, prompt_for
 from wrkhorse.inference import InferenceError, request_diff
 from wrkhorse.logsetup import get_logger
 from wrkhorse.sandbox import SandboxError, copy_tree
-from wrkhorse.store import Store
+from wrkhorse.store import Store, is_busy
 
 log = get_logger(__name__)
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -75,24 +76,44 @@ class Worker:
     def serve_forever(self) -> None:
         log.info("worker started execution_mode=%s", self.settings.execution_mode)
         while True:
-            self.once()
+            try:
+                self.once()
+            except sqlite3.OperationalError as exc:
+                if not is_busy(exc):
+                    raise
+                log.warning("queue lock busy; worker stays up and will retry")
             time.sleep(self.settings.poll_seconds)
 
     def _run(self, job: dict) -> None:
+        attempts = int(job["attempts"])
         stop = threading.Event()
+        lease_lost = threading.Event()
 
         def beat() -> None:
-            while not stop.wait(min(2.0, max(0.2, self.settings.stale_seconds / 3))):
-                self.store.touch(job["job_id"], self.worker_id)
-                self.store.heartbeat(self.settings.execution_mode)
+            interval = min(2.0, max(0.2, self.settings.stale_seconds / 3))
+            while not stop.wait(interval):
+                try:
+                    if not self.store.touch(job["job_id"], self.worker_id, attempts):
+                        lease_lost.set()
+                        return
+                    self.store.heartbeat(self.settings.execution_mode)
+                except sqlite3.OperationalError as exc:
+                    if not is_busy(exc):
+                        lease_lost.set()
+                        return
+                    log.warning("heartbeat deferred because the queue lock was busy")
 
-        thread = threading.Thread(target=beat, daemon=True)
+        thread = threading.Thread(target=beat, name="wrkhorse-heartbeat", daemon=True)
         thread.start()
         try:
             try:
-                status, error, result = self._process(job)
-            except Exception:
-                log.exception("job %s failed inside the worker", job["job_id"])
+                status, error, result = self._process(job, lease_lost)
+            except Exception as exc:
+                log.warning(
+                    "job %s failed inside the worker (%s)",
+                    job["job_id"],
+                    type(exc).__name__,
+                )
                 status, error, result = (
                     "failed",
                     "worker_error",
@@ -106,9 +127,13 @@ class Worker:
                         job_id=job["job_id"],
                     ),
                 )
+            if lease_lost.is_set():
+                log.warning("lost claim for job %s", job["job_id"])
+                return
             wrote = self.store.finish(
                 job["job_id"],
                 self.worker_id,
+                attempts,
                 status=status,
                 error=error,
                 result=result,
@@ -117,8 +142,9 @@ class Worker:
                 log.warning("lost claim for job %s", job["job_id"])
         finally:
             stop.set()
+            thread.join(timeout=1)
 
-    def _process(self, job: dict) -> tuple[str, str | None, dict]:
+    def _process(self, job: dict, lease_lost: threading.Event) -> tuple[str, str | None, dict]:
         job_id = job["job_id"]
         if self.settings.execution_mode != "trusted-local-demo":
             return (
@@ -148,7 +174,7 @@ class Worker:
                 ):
                     raise InferenceError("inference is not configured")
                 inference_called = True
-                diff_text = self._infer(manifest, repo)
+                diff_text = self._infer(manifest, repo, lease_lost.is_set)
             else:
                 raise DiffError("unknown mode")
             parsed = parse_unified(diff_text, max_bytes=self.settings.max_diff_bytes)
@@ -246,7 +272,7 @@ class Worker:
             ),
         )
 
-    def _infer(self, manifest: dict, repo: Path) -> str:
+    def _infer(self, manifest: dict, repo: Path, should_stop) -> str:
         if not (
             self.settings.inference_base_url
             and self.settings.inference_api_key
@@ -259,6 +285,7 @@ class Worker:
             model=self.settings.inference_model,
             prompt=prompt_for(manifest, repo),
             timeout=self.settings.inference_timeout_seconds,
+            should_stop=should_stop,
         )
 
     def _store_diff(self, job_id: str, diff_text: str, test_output: str | None) -> None:

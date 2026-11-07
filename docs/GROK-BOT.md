@@ -67,6 +67,25 @@ Stdio has no HTTP header. The token is required so the process will not start ha
 
 `make demo` uses this stdio path with an ephemeral token and `trusted-local-demo` on the worker child only. It is the tested local path. It is not a Grok Bot installation.
 
+## Alternate: stdio on the bot computer, vLLM only on the pod
+
+This is not installed or registered by this repository. No bot-computer package install, connector save, or account change is authorized here.
+
+```text
+Bot computer (one filesystem, not the pod)
+  wrkhorse mcp-stdio
+  wrkhorse worker
+  one shared SQLite file
+
+Pod
+  vLLM only
+  vllm serve "$MODEL" --host 127.0.0.1 --port 8000 --api-key "$WRKHORSE_INFERENCE_API_KEY"
+```
+
+The worker's `WRKHORSE_INFERENCE_BASE_URL` must be an authenticated route from the bot computer to that loopback server, and `WRKHORSE_INFERENCE_API_KEY` must be the vLLM key. You choose the route (for example an SSH tunnel you start yourself). It has to present the key. Binding vLLM to `0.0.0.0` or putting port 8000 on the public Runpod proxy is not that route.
+
+If you do not have such a route, keep the restricted draft in [RUNPOD.md](RUNPOD.md): gateway, worker, SQLite, and vLLM all on the pod, with only the gateway published. This repository does not open either path on a live machine.
+
 ## Not done
 
 - No OAuth metadata and no login flow.

@@ -14,6 +14,10 @@ class ScrubFilter(logging.Filter):
     """Replace configured secret values before a record is emitted."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        # Tracebacks can quote a request line or a chained exception. Drop them.
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
         secrets = [os.environ.get(name, "") for name in _SECRET_ENV]
         secrets = [value for value in secrets if len(value) >= 8]
         if not secrets:

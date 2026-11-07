@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+import time
 import tempfile
 import threading
 import unittest
@@ -75,6 +77,33 @@ class LogTests(unittest.TestCase):
                 os.environ.pop("WRKHORSE_AUTH_TOKEN", None)
             else:
                 os.environ["WRKHORSE_AUTH_TOKEN"] = previous
+
+    def test_exception_traceback_does_not_keep_the_key(self):
+        import io
+        import logging
+
+        previous = os.environ.get("WRKHORSE_INFERENCE_API_KEY")
+        os.environ["WRKHORSE_INFERENCE_API_KEY"] = INFERENCE_KEY
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.addFilter(ScrubFilter())
+        logger = logging.getLogger("wrkhorse.scrubtest")
+        logger.handlers = [handler]
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        try:
+            try:
+                raise RuntimeError(f"endpoint key {INFERENCE_KEY}")
+            except RuntimeError:
+                logger.exception("inference failed")
+            text = stream.getvalue()
+        finally:
+            if previous is None:
+                os.environ.pop("WRKHORSE_INFERENCE_API_KEY", None)
+            else:
+                os.environ["WRKHORSE_INFERENCE_API_KEY"] = previous
+        self.assertNotIn(INFERENCE_KEY, text)
+        self.assertNotIn("Traceback", text)
 
 
 class ConfigTests(unittest.TestCase):
@@ -414,6 +443,60 @@ class InferenceClientTests(unittest.TestCase):
         with self.assertRaises(InferenceError):
             chat_endpoint("http://user:secret@127.0.0.1/v1")
 
+    def test_slow_drip_hits_end_to_end_deadline_without_new_threads(self):
+        stop = threading.Event()
+
+        class Drip(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length:
+                        self.rfile.read(length)
+                    self.send_response(200)
+                    self.send_header("Content-Length", "100000")
+                    self.end_headers()
+                    for _ in range(40):
+                        if stop.is_set():
+                            return
+                        time.sleep(0.3)
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+                    return
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Drip)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            before_ids = {thread.ident for thread in threading.enumerate()}
+            started = time.monotonic()
+            with self.assertRaises(InferenceError) as caught:
+                request_diff(
+                    base_url=f"http://127.0.0.1:{port}/v1",
+                    api_key=INFERENCE_KEY,
+                    model="fixture-model",
+                    prompt="fix add",
+                    timeout=1.0,
+                )
+            elapsed = time.monotonic() - started
+            time.sleep(0.6)
+            leaked = [
+                thread.name
+                for thread in threading.enumerate()
+                if thread.ident not in before_ids and thread.is_alive()
+            ]
+        finally:
+            stop.set()
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(str(caught.exception), "inference deadline exceeded")
+        self.assertLess(elapsed, 2.5)
+        self.assertEqual(leaked, [])
+
 
 class RedirectHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
@@ -518,6 +601,162 @@ class DemoTests(unittest.TestCase):
         self.assertIn("OK", text)
         self.assertIn("executes_model_generated_code: false", text)
         self.assertNotIn(TOKEN, text)
+
+
+class LeaseTests(unittest.TestCase):
+    def test_stale_attempt_cannot_finish_newer_claim(self):
+        with tempfile.TemporaryDirectory() as raw:
+            store = Store(Path(raw) / "q.sqlite", stale_seconds=30, max_attempts=2)
+            job = store.enqueue("sample-add", "mock")
+            first = store.claim("worker-a")
+            _age(store, job["job_id"])
+            second = store.claim("worker-b")
+            self.assertFalse(
+                store.finish(
+                    job["job_id"],
+                    "worker-a",
+                    first["attempts"],
+                    status="succeeded",
+                    error=None,
+                    result={"code": "stale"},
+                )
+            )
+            current = store.get(job["job_id"])
+            self.assertEqual(current["claimed_by"], "worker-b")
+            self.assertEqual(current["attempts"], second["attempts"])
+            self.assertEqual(current["status"], "running")
+            self.assertIsNone(current["result_json"])
+            self.assertTrue(
+                store.finish(
+                    job["job_id"],
+                    "worker-b",
+                    second["attempts"],
+                    status="succeeded",
+                    error=None,
+                    result={"code": "tests_passed"},
+                )
+            )
+            self.assertFalse(
+                store.touch(job["job_id"], "worker-a", first["attempts"])
+            )
+            saved = json.loads(store.get(job["job_id"])["result_json"])
+        self.assertEqual(saved["code"], "tests_passed")
+
+    def test_heartbeat_survives_lock_longer_than_five_seconds(self):
+        from wrkhorse.executor import TestRun
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            settings = _worker_settings(root, "trusted-local-demo")
+            store = Store(settings.db_path, stale_seconds=30, max_attempts=2)
+            gate = threading.Event()
+
+            def hold(*_args, **_kwargs):
+                gate.wait(20)
+                return TestRun(0, "ok\n", False)
+
+            worker = Worker(settings, store, "worker-a")
+            done = threading.Thread(target=lambda: _patch_and_run(worker), daemon=True)
+            with _patch("wrkhorse.worker.run_unittest", hold):
+                done.start()
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    job = _only_or_none(store)
+                    if job is not None and job["status"] == "running":
+                        break
+                    time.sleep(0.05)
+                else:
+                    gate.set()
+                    self.fail("worker did not claim")
+                con = sqlite3.connect(store.path, timeout=1, isolation_level=None)
+                con.execute("BEGIN IMMEDIATE")
+                time.sleep(6)
+                con.execute("COMMIT")
+                con.close()
+                time.sleep(3)
+                job = _only(store)
+                seen = job["claimed_at"]
+                gate.set()
+                done.join(10)
+            self.assertEqual(job["status"], "running")
+            from datetime import datetime
+
+            age = datetime.now().astimezone() - datetime.fromisoformat(seen)
+            self.assertLess(age.total_seconds(), 4)
+
+    def test_separate_worker_process_survives_six_second_lock(self):
+        with tempfile.TemporaryDirectory() as raw:
+            db = Path(raw) / "q.sqlite"
+            env = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "HOME": raw,
+                "LANG": "C.UTF-8",
+                "WRKHORSE_DB": str(db),
+                "WRKHORSE_EXECUTION_MODE": "disabled",
+                "WRKHORSE_POLL_SECONDS": "0.05",
+                "PYTHONUNBUFFERED": "1",
+            }
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "wrkhorse", "worker"],
+                cwd=REPO,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            store = Store(db, stale_seconds=30, max_attempts=2)
+            try:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if proc.poll() is not None:
+                        self.fail(proc.stdout.read() if proc.stdout else "worker exited")
+                    if store.project_status()["worker_connected"]:
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("worker did not heartbeat")
+                with store.connect() as con:
+                    seen_before = con.execute("SELECT last_seen FROM heartbeats").fetchone()["last_seen"]
+                con = sqlite3.connect(db, timeout=1, isolation_level=None)
+                con.execute("BEGIN IMMEDIATE")
+                time.sleep(6)
+                self.assertIsNone(proc.poll())
+                con.execute("COMMIT")
+                con.close()
+                recovered = False
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    self.assertIsNone(proc.poll())
+                    with store.connect() as check:
+                        seen_after = check.execute("SELECT last_seen FROM heartbeats").fetchone()["last_seen"]
+                    if seen_after > seen_before:
+                        recovered = True
+                        break
+                    time.sleep(0.2)
+                self.assertTrue(recovered)
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                if proc.stdout is not None:
+                    proc.stdout.close()
+
+
+def _patch_and_run(worker: Worker) -> None:
+    worker.store.enqueue("sample-add", "mock")
+    worker.once()
+
+
+def _only_or_none(store: Store) -> dict | None:
+    with store.connect() as con:
+        rows = con.execute("SELECT * FROM tasks").fetchall()
+    if not rows:
+        return None
+    return dict(rows[0])
 
 
 class EnvContext:

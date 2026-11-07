@@ -104,13 +104,14 @@ make test
 
 ## 5. Start the model, then the worker, then the gateway
 
-vLLM's current server page shows:
+The copyable command binds vLLM to loopback. [vLLM's serve CLI](https://docs.vllm.ai/en/latest/cli/serve/) documents `--host` as the host name and `--port` (default 8000). This repository did not execute `vllm serve`. If this `vllm` build has no `--host` flag, stop. Do not start the server on another address.
 
 ```bash
-vllm serve <MODEL> --dtype auto --api-key "$WRKHORSE_INFERENCE_API_KEY"
+vllm serve --help | grep -q -- '--host' || { echo "vllm serve has no --host; refusing to start"; exit 1; }
+vllm serve "$WRKHORSE_INFERENCE_MODEL" --host 127.0.0.1 --port 8000 --api-key "$WRKHORSE_INFERENCE_API_KEY"
 ```
 
-and a client using `http://localhost:8000/v1`. On the pod, run `vllm serve --help`. If `--host` is present, set `--host 127.0.0.1`. Do not rely on `--api-key` alone: the vLLM docs say it covers `/v1`, `/v2`, and `/inference`, and does **not** cover every route, including `/invocations`. Keeping the process off the public proxy is the control this runbook uses. This repository did not execute `vllm serve`.
+Do not rely on `--api-key` alone. vLLM's OpenAI server docs say it covers `/v1`, `/v2`, and `/inference`, and does not cover every route, including `/invocations`. The loopback bind is what keeps those routes off the Runpod proxy. Do not add port 8000 to Expose HTTP Ports.
 
 In a second terminal:
 
