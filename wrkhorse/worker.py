@@ -89,7 +89,23 @@ class Worker:
         thread = threading.Thread(target=beat, daemon=True)
         thread.start()
         try:
-            status, error, result = self._process(job)
+            try:
+                status, error, result = self._process(job)
+            except Exception:
+                log.exception("job %s failed inside the worker", job["job_id"])
+                status, error, result = (
+                    "failed",
+                    "worker_error",
+                    _result(
+                        code="worker_error",
+                        diff=None,
+                        tests_ran=False,
+                        tests_passed=None,
+                        test_output=None,
+                        inference_called=False,
+                        job_id=job["job_id"],
+                    ),
+                )
             wrote = self.store.finish(
                 job["job_id"],
                 self.worker_id,
