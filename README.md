@@ -1,14 +1,16 @@
 # wrkhorse
 
-Local pilot for a queue that a Grok Bot can call, plus a separate worker that can run one reviewed coding fixture. The full product in [docs/AI-INFRASTRUCTURE-PLAN.md](docs/AI-INFRASTRUCTURE-PLAN.md) is still a proposal. This repository does not claim an end-to-end Runpod, Claude, or Grok Bot deployment.
+Local pilot for safe coding tasks and a future multi-agent system. The [full product plan](docs/AI-INFRASTRUCTURE-PLAN.md) remains a proposal. A **bounded ChatGPT → Runpod Serverless model inference** test has succeeded, but the full `wrkhorse` coordinator, Grok Bot, Claude app, and home MacBook connection have not been verified end to end.
 
 | | |
 | --- | --- |
 | Ready and tested here | MCP tools `submit_task`, `get_task_status`, `get_task_result`, `get_project_status` over stdio and Streamable HTTP; SQLite queue; reviewed `sample-add` mock diff and unit test |
 | Refused by default | Remote code execution. A subprocess is not a sandbox |
-| Not done | Real Grok Bot connector, OAuth, phone apps, GPU, vLLM, research worker, merges, deploys, purchases |
+| Runpod proof | ChatGPT successfully submitted and completed two inference jobs via its Runpod plugin; not the full wrkhorse coordinator |
+| Home Mac proof | An outbound-only GitHub issue → MacBook Ollama bridge is implemented for the sample-add fixture, **not yet tested on the owner's MacBook** |
+| Not done | Real Grok Bot connector, mobile MCP, production code sandbox, general coding tasks, research worker |
 
-Connection setup and budget status (2026-11-07): [docs/CONNECTIONS-2026-11-07.md](docs/CONNECTIONS-2026-11-07.md). ChatGPT → Runpod coding fixture pilot and funding blocker: [docs/CHATGPT-RUNPOD-PILOT.md](docs/CHATGPT-RUNPOD-PILOT.md).
+Connection setup and budget status (2026-11-07): [docs/CONNECTIONS-2026-11-07.md](docs/CONNECTIONS-2026-11-07.md). ChatGPT → Runpod completed coding fixture pilot: [docs/CHATGPT-RUNPOD-PILOT.md](docs/CHATGPT-RUNPOD-PILOT.md). **Home MacBook Air route:** [docs/HOME-MACBOOK-PILOT.md](docs/HOME-MACBOOK-PILOT.md).
 
 Details: [docs/READINESS.md](docs/READINESS.md), [docs/DECISIONS.md](docs/DECISIONS.md), [docs/GROK-BOT.md](docs/GROK-BOT.md), [docs/RUNPOD.md](docs/RUNPOD.md).
 
