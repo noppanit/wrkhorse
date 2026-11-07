@@ -8,6 +8,7 @@ Local test evidence comes from this repository's tests and the README. On 2026-1
 | ChatGPT → GitHub wrkhorse repository | Connected, verified 2026-11-07 | GitHub app read repository files and wrote documentation on a branch; not a wrkhorse task execution bridge |
 | ChatGPT → Runpod account | Connected, verified 2026-11-07 | Runpod plugin listed pods, endpoints and volumes successfully, all empty; no compute was provisioned |
 | ChatGPT → wrkhorse coding task | **Not connected** | No GitHub issue dispatcher or custom ChatGPT MCP integration yet; see connection log |
+| ChatGPT → Runpod coding fixture adapter | Code added, live inference blocked | `wrkhorse/runpod_pilot.py` and `tests/test_runpod_pilot.py`; Runpod endpoint deployment failed with insufficient balance (minimum $0.01). No job ran |
 | Four MCP tools, stdio | Ready, tested | `make demo` starts `mcp-stdio` and a worker; `tests/test_pilot.py` `DemoTests` |
 | Four MCP tools, Streamable HTTP + bearer | Ready, tested on `127.0.0.1` only | `GatewayTests.test_streamable_http_auth_and_tools` |
 | Missing token fails closed | Ready, tested | `ConfigTests.test_serve_exits_when_token_missing` |
