@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import zlib
 from collections.abc import Callable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -17,6 +18,7 @@ import httpx2
 
 MAX_RESPONSE_BYTES = 100_000
 _REDIRECTS = {301, 302, 303, 307, 308}
+_SUPPORTED_ENCODINGS = {"gzip", "x-gzip", "deflate"}
 
 
 class InferenceError(Exception):
@@ -99,25 +101,99 @@ async def _finish_or_stop(task: asyncio.Task[str], should_stop) -> str:
 async def _exchange(endpoint: str, api_key: str, body: dict) -> str:
     # No client-side read timeout. The outer wait_for is the only deadline.
     client = httpx2.AsyncClient(timeout=None, follow_redirects=False, trust_env=False)
-    response = None
     try:
-        response = await client.post(
+        async with client.stream(
+            "POST",
             endpoint,
             json=body,
             headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
-        )
-        if response.status_code in _REDIRECTS:
-            raise InferenceError("inference redirects are refused")
-        if response.status_code != 200:
-            raise InferenceError("inference request failed")
-        raw = await response.aread()
-        if len(raw) > MAX_RESPONSE_BYTES:
-            raise InferenceError("inference response too large")
-        return _parse_content(raw)
+        ) as response:
+            if response.status_code in _REDIRECTS:
+                raise InferenceError("inference redirects are refused")
+            if response.status_code != 200:
+                raise InferenceError("inference request failed")
+            raw = await _read_bounded(response)
+            return _parse_content(raw)
     finally:
-        if response is not None:
-            await response.aclose()
         await client.aclose()
+
+
+async def _read_bounded(response) -> bytes:
+    """Count decoded bytes and close as soon as they pass the limit."""
+    decoder = _Decoder(_content_encoding(response))
+    parts: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_raw():
+        if not chunk:
+            continue
+        piece, overflow = decoder.feed(chunk, MAX_RESPONSE_BYTES - total)
+        if piece:
+            parts.append(piece)
+            total += len(piece)
+        if overflow or total > MAX_RESPONSE_BYTES:
+            raise InferenceError("inference response too large")
+    piece, overflow = decoder.finish(MAX_RESPONSE_BYTES - total)
+    if piece:
+        parts.append(piece)
+        total += len(piece)
+    if overflow or total > MAX_RESPONSE_BYTES:
+        raise InferenceError("inference response too large")
+    return b"".join(parts)
+
+
+def _content_encoding(response) -> str:
+    values = response.headers.get_list("content-encoding", split_commas=True)
+    encodings = [value.strip().lower() for value in values if value.strip().lower() != "identity"]
+    if not encodings:
+        return "identity"
+    if len(encodings) != 1 or encodings[0] not in _SUPPORTED_ENCODINGS:
+        raise InferenceError("inference response failed")
+    return encodings[0]
+
+
+class _Decoder:
+    """Decode identity, gzip, or deflate without holding more than the caller allows."""
+
+    def __init__(self, encoding: str) -> None:
+        self.encoding = encoding
+        self._raw_deflate = False
+        if encoding == "identity":
+            self._zlib = None
+        elif encoding in {"gzip", "x-gzip"}:
+            self._zlib = zlib.decompressobj(zlib.MAX_WBITS | 16)
+        elif encoding == "deflate":
+            self._zlib = zlib.decompressobj()
+            self._raw_deflate = True
+        else:
+            raise InferenceError("inference response failed")
+
+    def feed(self, data: bytes, room: int) -> tuple[bytes, bool]:
+        if room <= 0:
+            return b"", bool(data)
+        if self._zlib is None:
+            if len(data) > room:
+                return data[:room], True
+            return data, False
+        try:
+            out = self._zlib.decompress(data, room)
+        except zlib.error as exc:
+            if self._raw_deflate:
+                self._raw_deflate = False
+                self._zlib = zlib.decompressobj(-zlib.MAX_WBITS)
+                return self.feed(data, room)
+            raise InferenceError("inference response failed") from exc
+        return out, bool(self._zlib.unconsumed_tail)
+
+    def finish(self, room: int) -> tuple[bytes, bool]:
+        if self._zlib is None:
+            return b"", False
+        try:
+            out = self._zlib.flush()
+        except zlib.error as exc:
+            raise InferenceError("inference response failed") from exc
+        if len(out) > room:
+            return out[: max(room, 0)], True
+        return out, False
 
 
 def _parse_content(raw: bytes) -> str:
