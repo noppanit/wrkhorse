@@ -1,10 +1,13 @@
 # Readiness
 
-Evidence is from this repository's tests and from the commands in the README. Anything that needs a real account, connector, or GPU is **not done**.
+Local test evidence comes from this repository's tests and the README. On 2026-11-07, external ChatGPT → GitHub and ChatGPT → Runpod **account-level connections were verified**, but no wrkhorse task connector or deployed GPU model was tested. See [CONNECTIONS-2026-11-07.md](CONNECTIONS-2026-11-07.md).
 
 | Component | Status | Evidence |
 | --- | --- | --- |
 | Requirements plan | Present, not implemented as a whole | `docs/AI-INFRASTRUCTURE-PLAN.md` |
+| ChatGPT → GitHub wrkhorse repository | Connected, verified 2026-11-07 | GitHub app read repository files and wrote documentation on a branch; not a wrkhorse task execution bridge |
+| ChatGPT → Runpod account | Connected, verified 2026-11-07 | Runpod plugin listed pods, endpoints and volumes successfully, all empty; no compute was provisioned |
+| ChatGPT → wrkhorse coding task | **Not connected** | No GitHub issue dispatcher or custom ChatGPT MCP integration yet; see connection log |
 | Four MCP tools, stdio | Ready, tested | `make demo` starts `mcp-stdio` and a worker; `tests/test_pilot.py` `DemoTests` |
 | Four MCP tools, Streamable HTTP + bearer | Ready, tested on `127.0.0.1` only | `GatewayTests.test_streamable_http_auth_and_tools` |
 | Missing token fails closed | Ready, tested | `ConfigTests.test_serve_exits_when_token_missing` |
@@ -21,7 +24,7 @@ Evidence is from this repository's tests and from the commands in the README. An
 | Real isolation (container / gVisor / user namespace) | Not done | No code. Remote execution remains refused |
 | Research worker | Not done | No module. `get_project_status` reports `research_worker: not_implemented` |
 | Grok Bot / Oddy connector, OAuth, phone apps | Not done | `docs/GROK-BOT.md`. No registration was performed |
-| Runpod pod, public HTTPS, vLLM, billing | Not done | `docs/RUNPOD.md`. No pod was created |
+| Runpod pod, public HTTPS, vLLM, budget enforcement | Not done | `docs/RUNPOD.md`. No pod was created; $50 experiment ceiling is not a hard cap |
 | Push, pull request, merge, deploy, purchase | Not done on purpose | Worker has no git remote and no payment client |
 
 `make test` and `make demo` do not use a network service. A failure of GitHub Actions on the pull request head is a blocker for merge; do not treat a local pass as a substitute for that check.
