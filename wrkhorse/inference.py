@@ -12,10 +12,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Callable
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx2
+
+from wrkhorse.local_model import (
+    DEFAULT_BASE_URL,
+    DUMMY_API_KEY,
+    LocalModelError,
+    validate_base_url,
+    validate_model_tag,
+)
 
 MAX_RESPONSE_BYTES = 100_000
 _REDIRECTS = {301, 302, 303, 307, 308}
@@ -23,6 +32,11 @@ _REQUEST_HEADERS = {
     "Accept": "application/json",
     "Accept-Encoding": "identity",
 }
+
+
+# Reasoning models served through OpenAI-compatible APIs (qwen3, deepseek-r1,
+# some llama.cpp/LM Studio builds) may put their chain of thought inline.
+_THINK = re.compile(r"^\s*<(think|thinking|reasoning)>.*?</\1>\s*", re.DOTALL | re.IGNORECASE)
 
 
 class InferenceError(Exception):
@@ -53,6 +67,7 @@ def request_diff(
     prompt: str,
     timeout: float,
     should_stop: Callable[[], bool] | None = None,
+    max_tokens: int = 1024,
 ) -> str:
     if not api_key or not model:
         raise InferenceError("inference is not configured")
@@ -62,7 +77,8 @@ def request_diff(
     body = {
         "model": model,
         "temperature": 0,
-        "max_tokens": 1024,
+        "max_tokens": max_tokens,
+        "stream": False,
         "messages": [
             {
                 "role": "system",
@@ -80,25 +96,39 @@ def request_diff(
         raise InferenceError("inference deadline exceeded") from exc
 
 
-def request_local_chat(*, model: str, prompt: str, timeout: float = 90) -> str:
-    """Text-only Ollama tool. No shell, files, or external inference endpoints.
+def request_local_chat(
+    *,
+    model: str,
+    prompt: str,
+    timeout: float = 90,
+    base_url: str = DEFAULT_BASE_URL,
+    allow_lan: bool = False,
+    max_tokens: int = 1024,
+) -> str:
+    """Text-only local-model tool. No shell, files, or cloud inference endpoints.
 
     This is an opt-in separate gateway tool; the normal queued coding worker
-    remains isolated. The localhost URL is fixed, the credential is a dummy,
-    and prompts and replies are bounded.
+    remains isolated. The URL must pass the local-model policy (loopback, or a
+    private LAN host when explicitly allowed), the credential is a dummy, and
+    prompts and replies are bounded.
     """
-    if not model or model.endswith(":cloud") or len(model) > 200:
-        raise InferenceError("local model is not configured")
+    try:
+        validate_model_tag(model)
+        # Config already resolved and checked the host; re-check syntax here
+        # so a caller cannot pass an arbitrary URL.
+        local_base, _scope = validate_base_url(base_url, allow_lan=allow_lan, resolve=False)
+    except LocalModelError as exc:
+        raise InferenceError("local model is not configured") from exc
     if not isinstance(prompt, str) or not prompt.strip():
         raise InferenceError("local model prompt is empty")
     if len(prompt.encode("utf-8")) > 4096:
         raise InferenceError("local model prompt too large")
-    if not 0 < timeout <= 120:
+    if not 0 < timeout <= 300:
         raise InferenceError("invalid local model deadline")
     body = {
         "model": model,
         "temperature": 0,
-        "max_tokens": 1024,
+        "max_tokens": max_tokens,
         "stream": False,
         "messages": [
             {
@@ -114,8 +144,8 @@ def request_local_chat(*, model: str, prompt: str, timeout: float = 90) -> str:
     }
     try:
         answer = asyncio.run(_bounded(
-            "http://127.0.0.1:11434/v1/chat/completions",
-            "ollama-local",
+            chat_endpoint(local_base),
+            DUMMY_API_KEY,
             body,
             timeout,
             None,
@@ -198,12 +228,32 @@ async def _read_bounded(response) -> bytes:
     return b"".join(parts)
 
 
+def strip_reasoning(content: str) -> str:
+    """Drop a leading <think>...</think> block emitted by reasoning models."""
+    stripped = _THINK.sub("", content, count=1)
+    if re.match(r"^\s*<(think|thinking|reasoning)>", stripped, re.IGNORECASE):
+        # Opened but never closed: the model ran out of tokens while thinking.
+        return ""
+    return stripped
+
+
 def _parse_content(raw: bytes) -> str:
     try:
         payload = json.loads(raw.decode("utf-8"))
-        content = payload["choices"][0]["message"]["content"]
+        choice = payload["choices"][0]
+        content = choice["message"]["content"]
     except (KeyError, IndexError, TypeError, json.JSONDecodeError, UnicodeError) as exc:
         raise InferenceError("inference response was not a chat completion") from exc
-    if not isinstance(content, str) or not content.strip():
+    if content is None:
+        content = ""
+    if not isinstance(content, str):
+        raise InferenceError("inference response was not a chat completion")
+    content = strip_reasoning(content)
+    if not content.strip():
+        if isinstance(choice, dict) and choice.get("finish_reason") == "length":
+            raise InferenceError(
+                "inference output was truncated; raise WRKHORSE_INFERENCE_MAX_TOKENS "
+                "or use a non-reasoning model"
+            )
         raise InferenceError("inference response was empty")
     return content

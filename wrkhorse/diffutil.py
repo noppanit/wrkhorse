@@ -30,12 +30,21 @@ class FileDiff:
     hunks: tuple[Hunk, ...]
 
 
+_FENCED = re.compile(r"^```[ \t]*(?:diff|patch|udiff)?[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
+
+
 def strip_fences(text: str) -> str:
     body = text.strip()
     if body.startswith("```"):
         lines = body.splitlines()
         if len(lines) >= 2 and lines[-1].startswith("```"):
             body = "\n".join(lines[1:-1])
+    elif not body.startswith(("--- ", "diff --git ")):
+        # Small local models often add "Here is the diff:" despite the prompt.
+        # Take exactly one fenced block; the strict parser still validates it.
+        blocks = _FENCED.findall(body)
+        if len(blocks) == 1:
+            body = blocks[0].strip("\n")
     if not body.endswith("\n"):
         body += "\n"
     return body
