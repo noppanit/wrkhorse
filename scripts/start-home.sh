@@ -59,6 +59,8 @@ export WRKHORSE_HOST=127.0.0.1
 export WRKHORSE_PORT="${WRKHORSE_PORT:-8765}"
 export WRKHORSE_DB="${WRKHORSE_DB:-$ROOT/var/home.sqlite}"
 export WRKHORSE_EXECUTION_MODE=inference-only
+# Owner-triggered startup enables text-only local Ollama questions.
+export WRKHORSE_MODEL_CHAT_ENABLED=1
 export WRKHORSE_INFERENCE_BASE_URL=http://127.0.0.1:11434/v1
 export WRKHORSE_INFERENCE_API_KEY=ollama-local
 export WRKHORSE_INFERENCE_TIMEOUT_SECONDS="${WRKHORSE_INFERENCE_TIMEOUT_SECONDS:-120}"
