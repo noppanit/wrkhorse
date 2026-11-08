@@ -16,6 +16,23 @@ Connection setup and budget status (2026-11-07): [docs/CONNECTIONS-2026-11-07.md
 
 Details: [docs/READINESS.md](docs/READINESS.md), [docs/DECISIONS.md](docs/DECISIONS.md), [docs/GROK-BOT.md](docs/GROK-BOT.md), [docs/RUNPOD.md](docs/RUNPOD.md).
 
+## Deploy the local model on your MacBook Air
+
+**Ready for local installation and testing; not yet tested on the owner's Mac or through a real Grok/Claude/OpenAI cloud client.** Use [the Mac deployment guide](docs/DEPLOY-MACBOOK.md) and the [cross-agent handoff](AGENTS.md).
+
+After installing Ollama, Python 3.12 and Git, the minimal setup on the Mac is:
+
+```bash
+git clone https://github.com/noppanit/wrkhorse.git
+cd wrkhorse
+ollama pull qwen2.5-coder:1.5b
+bash scripts/start-home.sh
+```
+
+In another Mac terminal: `source .venv/bin/activate && python scripts/probe_home.py --submit`. This tests the authenticated local MCP server and invokes the **local** Ollama model on a fixed safe `sample-add` fixture. It returns a proposed diff; no model-written code is executed or merged.
+
+The gateway supports **MCP Streamable HTTP** and two separate auth modes: high-entropy bearer for local/testing or **verified Cloudflare Access JWT** when Cloudflare Managed OAuth is configured with your domain and AUD tag. Never expose the raw Ollama API or the gateway without authenticated access. Different AI apps have different MCP/OAuth support; **the ChatGPT Plus iPhone app does not currently support custom remote MCP connections**. The tunnel does not bypass that product limitation.
+
 ## Quickstart
 
 ```bash
