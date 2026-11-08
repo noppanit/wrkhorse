@@ -85,6 +85,9 @@ class GatewaySettings:
     public_host: str | None
     access_team_domain: str | None
     access_audience: str | None
+    model_chat_enabled: bool
+    model_chat_model: str | None
+    model_chat_timeout_seconds: float
     rate_limit_per_minute: int
     max_body_bytes: int
     stale_seconds: float
@@ -152,6 +155,12 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
             raise ConfigError("WRKHORSE_ACCESS_TEAM_DOMAIN must be your Cloudflare Access domain")
         if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", audience or ""):
             raise ConfigError("WRKHORSE_ACCESS_AUDIENCE must be an Access application AUD tag")
+    chat_enabled = _env("WRKHORSE_MODEL_CHAT_ENABLED") == "1"
+    chat_model = _env("WRKHORSE_INFERENCE_MODEL") or None
+    if chat_enabled and (
+        not chat_model or len(chat_model) > 200 or chat_model.endswith(":cloud")
+    ):
+        raise ConfigError("model chat needs a locally downloaded Ollama model tag")
     stale, attempts = _shared_limits()
     return GatewaySettings(
         token=token,
@@ -162,6 +171,11 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         public_host=public_host,
         access_team_domain=team_domain,
         access_audience=audience,
+        model_chat_enabled=chat_enabled,
+        model_chat_model=chat_model if chat_enabled else None,
+        model_chat_timeout_seconds=_bounded_float(
+            "WRKHORSE_MODEL_CHAT_TIMEOUT_SECONDS", 90, 1, 120
+        ),
         rate_limit_per_minute=_bounded_int("WRKHORSE_RATE_LIMIT_PER_MINUTE", 60, 1, 600),
         max_body_bytes=65536,
         stale_seconds=stale,
