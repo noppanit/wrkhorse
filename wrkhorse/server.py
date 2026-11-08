@@ -12,6 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 
 from wrkhorse.auth import RateLimiter, bearer_matches
+from wrkhorse.access import AccessVerifier
 from wrkhorse.config import GatewaySettings
 from wrkhorse.store import Store, public_result, public_status
 
@@ -92,10 +93,14 @@ def _send_json(send, status: int, payload: dict, extra_headers: list[tuple[bytes
 
 
 class _Guard:
-    def __init__(self, app, token: str, limiter: RateLimiter) -> None:
+    def __init__(
+        self, app, token: str, limiter: RateLimiter,
+        access_verifier: AccessVerifier | None = None,
+    ) -> None:
         self.app = app
         self.token = token
         self.limiter = limiter
+        self.access_verifier = access_verifier
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -105,8 +110,16 @@ class _Guard:
         if not self.limiter.allow(str(client[0])):
             await _send_json(send, 429, {"error": "rate_limited"})
             return
-        header = _header(scope, "authorization")
-        if not bearer_matches(header, self.token):
+        if self.access_verifier is not None:
+            # Cloudflare Managed OAuth forwards a signed assertion, *not*
+            # our locally generated bearer token. Never bypass Access with
+            # the local token once Access mode is enabled.
+            allowed = self.access_verifier.verify(
+                _header(scope, "cf-access-jwt-assertion")
+            )
+        else:
+            allowed = bearer_matches(_header(scope, "authorization"), self.token)
+        if not allowed:
             await _send_json(
                 send,
                 401,
@@ -152,6 +165,11 @@ def http_app(settings: GatewaySettings):
         app,
         settings.token,
         RateLimiter(settings.rate_limit_per_minute, 60),
+        access_verifier=(
+            AccessVerifier(settings.access_team_domain, settings.access_audience)
+            if settings.access_team_domain and settings.access_audience
+            else None
+        ),
     )
 
 
