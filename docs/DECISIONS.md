@@ -1,5 +1,15 @@
 # Decisions
 
+## 2026-11-07 — Preferred home-model integration: one local MCP server, no runtime GitHub/Runpod relay
+
+Context: After proving ChatGPT could call a cloud-hosted Qwen model on Runpod, the owner clarified the target: a cloud assistant (especially Grok Bot, plus ChatGPT where supported) should call a **model running on a MacBook Air at home**, with no GitHub Issues mailbox and no Runpod resource in the routine request path.
+
+Choice: use the existing `wrkhorse` MCP gateway as the common task API on the Mac, a local worker and local Ollama model, and, for compatible remote MCP clients, a secure authenticated HTTPS route such as **named Cloudflare Tunnel + standards-compatible OAuth/Access**. Keep Ollama bound to loopback. Start with `sample-add`, model-proposed diffs only, then test each client and mobile surface separately. Implementation milestones and evidence in [LOCAL-MCP-HANDOFF.md](LOCAL-MCP-HANDOFF.md); agent entry point [../AGENTS.md](../AGENTS.md).
+
+Not chosen as the preferred runtime transport: GitHub Issues polling and the proposed Runpod Serverless HTTP relay. Both can remain documented alternatives, but do not enable them to achieve the owner's current goal.
+
+Blocker: official ChatGPT custom-MCP availability excludes direct use from the owner's current **Plus iPhone** app. A network tunnel does not override a product limitation. OpenAI Secure MCP Tunnel is an alternative for eligible OpenAI products; it is not the same endpoint shared by Grok. Do not claim the home integration is functioning until an authenticated request from a real supported client reaches the Mac and the result returns.
+
 Dated 2026-11-07. The requirements document is [AI-INFRASTRUCTURE-PLAN.md](AI-INFRASTRUCTURE-PLAN.md). This file records the pilot slice only.
 
 ## 2026-11-07 — One queue, two processes, four tools
