@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from wrkhorse.model_router import load_router, RouterError
 from wrkhorse.local_model import (
     DEFAULT_BASE_URL,
     DUMMY_API_KEY,
@@ -198,6 +199,10 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         except LocalModelError as exc:
             raise ConfigError(f"model chat needs a locally downloaded model tag: {exc}") from exc
         chat_base_url, chat_scope = local_model_endpoint()
+        try:
+            load_router(local_url=chat_base_url, local_model=chat_model, allow_lan=chat_scope == "lan")
+        except RouterError as exc:
+            raise ConfigError(f"model router: {exc}") from exc
     github_enabled = _env("WRKHORSE_GITHUB_DRAFTS_ENABLED") == "1"
     draft_repo = _env("WRKHORSE_GITHUB_DRAFT_REPO") or None
     draft_token = os.environ.get("WRKHORSE_GITHUB_TOKEN", "")
@@ -276,6 +281,10 @@ def load_worker_settings() -> WorkerSettings:
         if api_key not in (None, DUMMY_API_KEY):
             raise ConfigError("inference-only refuses a real inference API key")
         api_key = DUMMY_API_KEY  # ignored by Ollama / LM Studio / llama.cpp
+        try:
+            load_router(local_url=base_url, local_model=model, allow_lan=scope == "lan")
+        except RouterError as exc:
+            raise ConfigError(f"model router: {exc}") from exc
 
     stale, attempts = _shared_limits()
     return WorkerSettings(
