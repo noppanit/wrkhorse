@@ -171,6 +171,8 @@ class GitHubDrafts:
                 not isinstance(state.get("path"), str)):
             raise DraftError("unknown_draft")
         validate_path(state["path"])
+        if not isinstance(state.get("number"), int) or state["number"] <= 0:
+            raise DraftError("unknown_draft")
         return state
 
     def read_file(self, path: str, draft_id: str = "") -> dict:
@@ -233,7 +235,13 @@ class GitHubDrafts:
                 "https://github.com/" + self.repo + "/pull/"
             ):
                 raise DraftError("github_draft_pr_not_confirmed")
-            state = {"repo": self.repo, "branch": branch, "path": path, "url": url}
+            number = pr.get("number")
+            if not isinstance(number, int) or number <= 0:
+                raise DraftError("github_draft_pr_not_confirmed")
+            state = {
+                "repo": self.repo, "branch": branch, "path": path,
+                "url": url, "number": number,
+            }
             name = self.state_dir / (draft_id + ".json")
             try:
                 fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -255,6 +263,13 @@ class GitHubDrafts:
             raise DraftError("invalid_new_text")
         with self.lock:
             state = self._state(draft_id)
+            pr = self.api.call("GET", "/pulls/" + str(state["number"]))
+            if (
+                pr.get("state") != "open" or pr.get("draft") is not True or
+                (pr.get("head") or {}).get("ref") != state["branch"] or
+                (pr.get("base") or {}).get("ref") != "main"
+            ):
+                raise DraftError("draft_pr_no_longer_editable")
             current = self._file(state["path"], state["branch"])
             if current["content"].count(old_text) != 1:
                 raise DraftError("old_text_must_match_exactly_once")
