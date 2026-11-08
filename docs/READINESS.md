@@ -1,5 +1,7 @@
 # Readiness
 
+**Owner-reported live result (2026-11-07):** user reports `wrkhorse` now connects successfully to **Grok Bot**; we did not inspect runtime logs or the client request. This supersedes earlier "Grok Bot not connected" planning statements but is not independent verification. Pi-inspired safe GitHub draft `read_file`, `write_file` and `edit_file` are added behind a separate explicit opt-in; GitHub reads/writes are only tested with local mocked GitHub APIs and local MCP transport. See [GITHUB-DRAFTS.md](GITHUB-DRAFTS.md). A first real GitHub draft-PR write from Grok Bot is still pending.
+
 **Mac deployment code is prepared (2026-11-07), including opt-in text-only `ask_local_model` for compatible clients:** [DEPLOY-MACBOOK.md](DEPLOY-MACBOOK.md), `scripts/start-home.sh`, `scripts/probe_home.py`, `tests/test_home_deployment.py`, `wrkhorse/access.py`. CI has network-free tests for strict local Ollama URL/model policy, inference-only sample fixture, Host/Origin safety and Cloudflare Access JWT validation. **No real home Mac model inference or remote cloud client invocation has been performed yet.** A Cloudflare named tunnel, Managed OAuth app, domain and the user's Mac setup are still required for remote access. Generic MCP does not guarantee each consumer app supports a custom connection; the ChatGPT Plus iPhone limitation remains.
 
 **Next implementation target (owner decision):** [shared MacBook Air MCP handoff](LOCAL-MCP-HANDOFF.md). The local Ollama + authenticated remote MCP route for compatible clients is **not yet deployed**. GitHub and Runpod are not preferred as runtime bridges; custom MCP from the existing ChatGPT Plus iPhone app remains product-limited.
@@ -30,9 +32,10 @@ Local test evidence comes from this repository's tests and the README. On 2026-1
 | Inference result is a diff, not executed code | Ready, tested against a fake diff | `WorkerPolicyTests.test_inference_saves_diff_and_does_not_execute_it` |
 | Real isolation (container / gVisor / user namespace) | Not done | No code. Remote execution remains refused |
 | Research worker | Not done | No module. `get_project_status` reports `research_worker: not_implemented` |
-| Grok Bot / Oddy connector, OAuth, phone apps | Not done | `docs/GROK-BOT.md`. No registration was performed |
+| Grok Bot / Oddy connector, OAuth, phone apps | **Grok Bot connection owner-reported working; evidence not independently inspected** | User reported successful wrkhorse ↔ Grok Bot test 2026-11-07; mobile/other clients unverified |
 | Full wrkhorse coordinator on Runpod, secure gateway, vLLM, budget enforcement | Not done | The working Runpod setup was a separate managed llama.cpp Serverless worker, not the wrkhorse gateway or vLLM; $50 ceiling is not a hard cap |
-| Push, pull request, merge, deploy, purchase | Not done on purpose | Worker has no git remote and no payment client |
+| Optional GitHub Markdown post draft PRs | **Implemented, tested with fake GitHub API and local MCP; live remote draft unverified** | `wrkhorse/github_drafts.py`, `tests/test_github_drafts.py`, `tests/test_github_drafts_mcp.py`; only `posts/drafts/<slug>.md` in one configured repo, new branch + draft PR, exact-match edits |
+| Direct main write, merge, delete, publishing, payment | **Not provided** | No such tool/API exposed. Owner must review and merge draft PR manually |
 
 `make test` and `make demo` do not use a network service. A failure of GitHub Actions on the pull request head is a blocker for merge; do not treat a local pass as a substitute for that check.
 
