@@ -1,9 +1,18 @@
 [project]
 name = "wrkhorse"
 version = "0.1.0"
-description = "MCP queue and a separate coding worker for a local pilot"
+description = "Local-first, authenticated MCP task gateway and bounded model router"
+readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["mcp==2.3.0"]
+license = {text = "Proprietary - see repository for terms"}
+keywords = ["mcp", "ollama", "local-ai", "model-router"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Development Status :: 3 - Alpha",
+]
+dependencies = ["mcp==2.3.0", "httpx2==2.16.0", "PyJWT==2.15.1", "cryptography>=45,<51"]
 
 [project.scripts]
 wrkhorse = "wrkhorse.cli:main"
