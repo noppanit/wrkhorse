@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from urllib.parse import urlsplit
 
 import uvicorn
@@ -14,6 +15,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from wrkhorse.auth import RateLimiter, bearer_matches
 from wrkhorse.access import AccessVerifier
 from wrkhorse.config import GatewaySettings
+from wrkhorse.inference import InferenceError, request_local_chat
 from wrkhorse.store import Store, public_result, public_status
 
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -32,7 +34,8 @@ def build_server(settings: GatewaySettings) -> MCPServer:
             "Do not send repository paths, shell commands, or credentials. "
             "submit_task only stores a job. A separate worker claims it. "
             "The default worker refuses code execution. Model-written code is never executed. "
-            "Research tasks are not implemented."
+            "Research tasks are not implemented. Optional ask_local_model returns text only; "
+            "it cannot run commands, read files or make changes."
         ),
     )
 
@@ -62,6 +65,36 @@ def build_server(settings: GatewaySettings) -> MCPServer:
     def get_project_status() -> dict:
         """Return pilot readiness. Does not run a task."""
         return store.project_status()
+
+    if settings.model_chat_enabled:
+        # Only the owner-started home script enables this tool. Keep Ollama
+        # bounded to one in-flight request so external clients cannot fan out
+        # inference on a battery-powered Mac.
+        gate = threading.BoundedSemaphore(1)
+
+        @mcp.tool()
+        def ask_local_model(prompt: str) -> dict:
+            """Ask local Ollama for a text answer; no file access or execution."""
+            if not gate.acquire(blocking=False):
+                raise ToolError("local_model_busy")
+            try:
+                try:
+                    answer = request_local_chat(
+                        model=settings.model_chat_model or "",
+                        prompt=prompt,
+                        timeout=settings.model_chat_timeout_seconds,
+                    )
+                except (InferenceError, OSError, UnicodeError) as exc:
+                    raise ToolError("local_model_failed") from None
+            finally:
+                gate.release()
+            return {
+                "model": settings.model_chat_model,
+                "answer": answer,
+                "inference_location": "localhost",
+                "executes_code": False,
+                "files_changed": False,
+            }
 
     return mcp
 
