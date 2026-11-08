@@ -103,6 +103,8 @@ class GatewaySettings:
     max_body_bytes: int
     stale_seconds: float
     max_attempts: int
+    github_drafts_repo: str | None = None
+    github_drafts_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +198,24 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         except LocalModelError as exc:
             raise ConfigError(f"model chat needs a locally downloaded model tag: {exc}") from exc
         chat_base_url, chat_scope = local_model_endpoint()
+    github_enabled = _env("WRKHORSE_GITHUB_DRAFTS_ENABLED") == "1"
+    draft_repo = _env("WRKHORSE_GITHUB_DRAFT_REPO") or None
+    draft_token = os.environ.get("WRKHORSE_GITHUB_TOKEN", "")
+    if github_enabled:
+        # Always opt in explicitly. This is a GitHub write credential, *not*
+        # an Ollama token, MCP bearer token or normal environment default.
+        from wrkhorse.github_drafts import DraftError, validate_repo
+
+        try:
+            validate_repo(draft_repo or "")
+        except DraftError as exc:
+            raise ConfigError("WRKHORSE_GITHUB_DRAFT_REPO must be owner/repo") from exc
+        if not draft_token or len(draft_token) < 20 or any(
+            char.isspace() for char in draft_token
+        ):
+            raise ConfigError("WRKHORSE_GITHUB_TOKEN requires a fine-grained repository token")
+        if draft_token.lower().startswith(("replace-", "changeme")):
+            raise ConfigError("WRKHORSE_GITHUB_TOKEN is a placeholder")
     stale, attempts = _shared_limits()
     return GatewaySettings(
         token=token,
@@ -218,6 +238,8 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         max_body_bytes=65536,
         stale_seconds=stale,
         max_attempts=attempts,
+        github_drafts_repo=draft_repo if github_enabled else None,
+        github_drafts_token=draft_token if github_enabled else None,
     )
 
 
