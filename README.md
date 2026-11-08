@@ -10,7 +10,7 @@ Local pilot for safe coding tasks and a future multi-agent system. The [full pro
 | Home Mac proof | An outbound-only GitHub issue → MacBook Ollama bridge is implemented for the sample-add fixture, **not yet tested on the owner's MacBook** |
 | Not done | Real Grok Bot connector, mobile MCP, production code sandbox, general coding tasks, research worker |
 
-Connection setup and budget status (2026-11-07): [docs/CONNECTIONS-2026-11-07.md](docs/CONNECTIONS-2026-11-07.md). ChatGPT → Runpod completed coding fixture pilot: [docs/CHATGPT-RUNPOD-PILOT.md](docs/CHATGPT-RUNPOD-PILOT.md). **Home MacBook Air route:** [docs/HOME-MACBOOK-PILOT.md](docs/HOME-MACBOOK-PILOT.md).
+Connection setup and budget status (2026-11-07): [docs/CONNECTIONS-2026-11-07.md](docs/CONNECTIONS-2026-11-07.md). ChatGPT → Runpod completed coding fixture pilot: [docs/CHATGPT-RUNPOD-PILOT.md](docs/CHATGPT-RUNPOD-PILOT.md). **Home MacBook Air routes:** [GitHub issue bridge](docs/HOME-MACBOOK-PILOT.md) or [no-GitHub Runpod relay + authenticated tunnel (proposal only)](docs/HOME-NO-GITHUB-OPTION.md).
 
 Details: [docs/READINESS.md](docs/READINESS.md), [docs/DECISIONS.md](docs/DECISIONS.md), [docs/GROK-BOT.md](docs/GROK-BOT.md), [docs/RUNPOD.md](docs/RUNPOD.md).
 
