@@ -324,7 +324,7 @@ class Worker:
         )
         prompt = (
             prompt_for(manifest, repo)
-            + "\\nThis original Python file has EXACTLY TWO lines. "
+            + "\nThis original Python file has EXACTLY TWO lines. "
             + "For the one-line replacement, use a counted hunk "
             + "@@ -1,2 +1,2 @@ with one context line, one removed "
             + "line and one added line. Return no markdown fences."
