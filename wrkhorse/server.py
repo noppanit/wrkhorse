@@ -17,6 +17,7 @@ from wrkhorse.auth import RateLimiter, bearer_matches
 from wrkhorse.access import AccessVerifier
 from wrkhorse.config import GatewaySettings
 from wrkhorse.inference import InferenceError, request_local_chat
+from wrkhorse.model_router import load_router
 from wrkhorse.github_drafts import DraftError, GitHubDrafts
 from wrkhorse.logsetup import get_logger
 from wrkhorse.store import Store, public_result, public_status
@@ -26,6 +27,7 @@ log = get_logger(__name__)
 
 
 def build_server(settings: GatewaySettings) -> MCPServer:
+    router = load_router(local_url=settings.model_chat_base_url, local_model=settings.model_chat_model, allow_lan=settings.model_chat_scope == "lan") if settings.model_chat_enabled else None
     store = Store(
         settings.db_path,
         stale_seconds=settings.stale_seconds,
@@ -89,6 +91,8 @@ def build_server(settings: GatewaySettings) -> MCPServer:
             "chat_enabled": settings.model_chat_enabled,
             "model": settings.model_chat_model,
             "location": settings.model_chat_scope,
+            "routing": router.mode if router else "disabled",
+            "cloud_configured": bool(router and router.cloud),
         }
         return status
 
@@ -105,12 +109,15 @@ def build_server(settings: GatewaySettings) -> MCPServer:
                 raise ToolError("local_model_busy")
             try:
                 try:
+                    # Chat stays local in auto mode. Cloud is only selected
+                    # by explicit cloud mode; never silently spend for chat.
+                    route = router.candidates("chat")[0]
                     answer = request_local_chat(
-                        model=settings.model_chat_model or "",
+                        model=route.model,
                         prompt=prompt,
                         timeout=settings.model_chat_timeout_seconds,
-                        base_url=settings.model_chat_base_url,
-                        allow_lan=settings.model_chat_scope == "lan",
+                        base_url=route.base_url,
+                        allow_lan=route.name == "local" and settings.model_chat_scope == "lan",
                         max_tokens=settings.model_max_tokens,
                     )
                 except (InferenceError, OSError, UnicodeError) as exc:
@@ -119,10 +126,10 @@ def build_server(settings: GatewaySettings) -> MCPServer:
             finally:
                 gate.release()
             return {
-                "model": settings.model_chat_model,
+                "model": route.model,
                 "answer": answer,
                 "inference_location": (
-                    "localhost" if settings.model_chat_scope == "loopback" else "private-lan"
+                    "cloud-tunnel" if route.name == "cloud-tunnel" else ("localhost" if settings.model_chat_scope == "loopback" else "private-lan")
                 ),
                 "executes_code": False,
                 "files_changed": False,
