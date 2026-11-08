@@ -317,6 +317,24 @@ class Worker:
             and self.settings.inference_model
         ):
             raise InferenceError("inference is not configured")
+        # Preserve the historical trusted-local-demo endpoint behavior.
+        # Router policy applies only to the home inference-only worker.
+        if self.settings.execution_mode != "inference-only":
+            return request_diff(
+                base_url=self.settings.inference_base_url,
+                api_key=self.settings.inference_api_key,
+                model=self.settings.inference_model,
+                prompt=(
+                    prompt_for(manifest, repo)
+                    + "\nThis original Python file has EXACTLY TWO lines. "
+                    + "For the one-line replacement, use a counted hunk "
+                    + "@@ -1,2 +1,2 @@ with one context line, one removed "
+                    + "line and one added line. Return no markdown fences."
+                ),
+                timeout=self.settings.inference_timeout_seconds,
+                should_stop=should_stop,
+                max_tokens=self.settings.inference_max_tokens,
+            )
         router = load_router(
             local_url=self.settings.inference_base_url,
             local_model=self.settings.inference_model,
