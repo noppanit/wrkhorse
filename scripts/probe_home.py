@@ -75,7 +75,7 @@ async def check(url: str, token: str, submit: bool, ask: str | None) -> None:
                 for _ in range(180):
                     status = _payload(await session.call_tool("get_task_status", {"job_id": job_id}))
                     current = status.get("status")
-                    if current in ("diff_ready", "failed", "refused", "succeeded"):
+                    if status.get("ready"):
                         break
                     await asyncio.sleep(1)
                 else:

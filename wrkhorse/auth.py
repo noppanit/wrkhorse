@@ -25,7 +25,11 @@ def bearer_matches(header: str, expected: str) -> bool:
 
 
 class RateLimiter:
-    """Fixed window of timestamps. Not shared across processes."""
+    """Sliding-window log of request times per client. Not shared across processes.
+
+    A client's entry is removed once its window empties, so memory is bounded by
+    the clients seen in the last window rather than every client ever seen.
+    """
 
     def __init__(self, max_calls: int, window_seconds: float) -> None:
         if max_calls < 1:
@@ -33,9 +37,11 @@ class RateLimiter:
         self.max_calls = max_calls
         self.window_seconds = window_seconds
         self._hits: dict[str, deque[float]] = {}
+        self._last_sweep = time.monotonic()
 
     def allow(self, key: str) -> bool:
         now = time.monotonic()
+        self._evict_idle(now)
         hits = self._hits.setdefault(key, deque())
         while hits and now - hits[0] > self.window_seconds:
             hits.popleft()
@@ -43,3 +49,12 @@ class RateLimiter:
             return False
         hits.append(now)
         return True
+
+    def _evict_idle(self, now: float) -> None:
+        # At most one full sweep per window keeps allow() O(1) amortized.
+        if now - self._last_sweep < self.window_seconds:
+            return
+        self._last_sweep = now
+        stale = [k for k, h in self._hits.items() if not h or now - h[-1] > self.window_seconds]
+        for k in stale:
+            del self._hits[k]

@@ -14,7 +14,7 @@ import time
 import httpx2
 
 from wrkhorse.config import ConfigError, _env, local_model_endpoint
-from wrkhorse.inference import InferenceError, request_diff
+from wrkhorse.inference import InferenceEmptyResponse, InferenceError, request_diff
 from wrkhorse.local_model import DUMMY_API_KEY, LocalModelError, validate_model_tag
 
 
@@ -79,11 +79,11 @@ def run_doctor(*, warm: bool, out=print) -> int:
             timeout=300,
             max_tokens=256,
         )
+    except InferenceEmptyResponse:
+        pass  # an empty or truncated reply still proves the model loaded and answered
     except InferenceError as exc:
-        # "empty"/"truncated" still proves the model loaded and answered.
-        if "deadline" in str(exc) or "failed" in str(exc):
-            out(f"FAIL warm-up: {exc}")
-            return 2
+        out(f"FAIL warm-up: {exc}")
+        return 2
     out(f"OK model loaded and answered in {time.monotonic() - started:.1f}s")
     return 0
 
