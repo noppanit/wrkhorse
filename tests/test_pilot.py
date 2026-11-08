@@ -726,6 +726,19 @@ class DemoTests(unittest.TestCase):
         self.assertIn("executes_model_generated_code: false", text)
         self.assertNotIn(TOKEN, text)
 
+    def test_inference_demo_returns_proposed_diff_without_executing_it(self):
+        from wrkhorse.demo import run_demo
+
+        text = run_demo(mode="inference")
+        self.assertIn("mode: inference", text)
+        self.assertIn("status: diff_ready", text)
+        self.assertIn("+    return left + right", text)
+        self.assertIn("tests_ran: false", text)
+        self.assertIn("inference_called: true", text)
+        self.assertIn("executes_model_generated_code: false", text)
+        self.assertNotIn(TOKEN, text)
+        self.assertNotIn(INFERENCE_KEY, text)
+
 
 class LeaseTests(unittest.TestCase):
     def test_stale_attempt_cannot_finish_newer_claim(self):

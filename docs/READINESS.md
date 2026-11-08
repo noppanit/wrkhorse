@@ -30,6 +30,7 @@ Local test evidence comes from this repository's tests and the README. On 2026-1
 | Queue lock and stale attempt | Ready, tested | Separate worker processes share SQLite (`LeaseTests`). A running job's heartbeat recovers after a lock longer than five seconds. A second process reclaims a stale attempt; its artifacts stay under `attempt-<n>` and the first process cannot change them |
 | Nonblocking, not in this round | Recorded | HTTP 429 is implemented in the gateway and only unit-tested at the limiter. No extra connector, tunnel, or billing automation |
 | Inference result is a diff, not executed code | Ready, tested against a fake diff | `WorkerPolicyTests.test_inference_saves_diff_and_does_not_execute_it` |
+| Local inference pipeline end-to-end (stub loopback model server) | Ready, tested; **stub only — no real Ollama/Mac run yet** | `make demo-inference`, `DemoTests.test_inference_demo_returns_proposed_diff_without_executing_it`; T0 limits/gaps in [T0-SECURITY-GAPS.md](T0-SECURITY-GAPS.md) |
 | Real isolation (container / gVisor / user namespace) | Not done | No code. Remote execution remains refused |
 | Research worker | Not done | No module. `get_project_status` reports `research_worker: not_implemented` |
 | Grok Bot / Oddy connector, OAuth, phone apps | **Grok Bot connection owner-reported working; evidence not independently inspected** | User reported successful wrkhorse ↔ Grok Bot test 2026-11-07; mobile/other clients unverified |
