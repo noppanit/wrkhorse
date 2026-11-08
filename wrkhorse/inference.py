@@ -80,6 +80,53 @@ def request_diff(
         raise InferenceError("inference deadline exceeded") from exc
 
 
+def request_local_chat(*, model: str, prompt: str, timeout: float = 90) -> str:
+    """Text-only Ollama tool. No shell, files, or external inference endpoints.
+
+    This is an opt-in separate gateway tool; the normal queued coding worker
+    remains isolated. The localhost URL is fixed, the credential is a dummy,
+    and prompts and replies are bounded.
+    """
+    if not model or model.endswith(":cloud") or len(model) > 200:
+        raise InferenceError("local model is not configured")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise InferenceError("local model prompt is empty")
+    if len(prompt.encode("utf-8")) > 4096:
+        raise InferenceError("local model prompt too large")
+    if not 0 < timeout <= 120:
+        raise InferenceError("invalid local model deadline")
+    body = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": 1024,
+        "stream": False,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a local assistant. Answer the question concisely. "
+                    "Do not claim to have executed code, edited files, accessed "
+                    "external services, or performed actions."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+    }
+    try:
+        answer = asyncio.run(_bounded(
+            "http://127.0.0.1:11434/v1/chat/completions",
+            "ollama-local",
+            body,
+            timeout,
+            None,
+        ))
+    except TimeoutError as exc:
+        raise InferenceError("local model deadline exceeded") from exc
+    if len(answer.encode("utf-8")) > 16_384:
+        raise InferenceError("local model output too large")
+    return answer
+
+
 async def _bounded(endpoint, api_key, body, timeout, should_stop) -> str:
     task = asyncio.create_task(_exchange(endpoint, api_key, body))
     try:

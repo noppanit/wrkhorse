@@ -16,6 +16,23 @@ Connection setup and budget status (2026-11-07): [docs/CONNECTIONS-2026-11-07.md
 
 Details: [docs/READINESS.md](docs/READINESS.md), [docs/DECISIONS.md](docs/DECISIONS.md), [docs/GROK-BOT.md](docs/GROK-BOT.md), [docs/RUNPOD.md](docs/RUNPOD.md).
 
+## Deploy the local model on your MacBook Air
+
+**Ready for local installation and testing; not yet tested on the owner's Mac or through a real Grok/Claude/OpenAI cloud client.** Use [the Mac deployment guide](docs/DEPLOY-MACBOOK.md) and the [cross-agent handoff](AGENTS.md).
+
+After installing Ollama, Python 3.12 and Git, the minimal setup on the Mac is:
+
+```bash
+git clone https://github.com/noppanit/wrkhorse.git
+cd wrkhorse
+ollama pull qwen2.5-coder:1.5b
+bash scripts/start-home.sh
+```
+
+In another Mac terminal: `source .venv/bin/activate && python scripts/probe_home.py --ask "Hello from my Mac"` to ask your **local Ollama model** a text question, or `python scripts/probe_home.py --submit` for the fixed safe coding fixture. It returns a proposed diff; no model-written code is executed or merged.
+
+The gateway exposes a bounded text-only `ask_local_model(prompt)` tool, plus four task-queue tools. A compatible AI agent can ask the local model questions, but it cannot execute commands, edit files or run arbitrary agent workflows. The gateway supports **MCP Streamable HTTP** and two separate auth modes: high-entropy bearer for local/testing or **verified Cloudflare Access JWT** when Cloudflare Managed OAuth is configured with your domain and AUD tag. Never expose the raw Ollama API or the gateway without authenticated access. Different AI apps have different MCP/OAuth support; **the ChatGPT Plus iPhone app does not currently support custom remote MCP connections**. The tunnel does not bypass that product limitation.
+
 ## Quickstart
 
 ```bash
@@ -47,7 +64,7 @@ Gateway, worker, and the SQLite file must be on the **same machine**. This slice
 
 | Process | Command | Reads | Does not do |
 | --- | --- | --- | --- |
-| HTTP gateway | `python -m wrkhorse serve` | `WRKHORSE_AUTH_TOKEN`, `WRKHORSE_DB` | call a model, run tests, read the inference key |
+| HTTP gateway | `python -m wrkhorse serve` | `WRKHORSE_AUTH_TOKEN`, `WRKHORSE_DB` | run tests, read a real inference key or execute model code; optional text-only `ask_local_model` calls local Ollama |
 | stdio gateway | `python -m wrkhorse mcp-stdio` | same token and database | run jobs |
 | worker | `python -m wrkhorse worker` | `WRKHORSE_DB`, optional inference settings | read the gateway token |
 

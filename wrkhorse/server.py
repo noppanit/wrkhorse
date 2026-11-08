@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from urllib.parse import urlsplit
 
 import uvicorn
@@ -12,7 +13,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 
 from wrkhorse.auth import RateLimiter, bearer_matches
+from wrkhorse.access import AccessVerifier
 from wrkhorse.config import GatewaySettings
+from wrkhorse.inference import InferenceError, request_local_chat
 from wrkhorse.store import Store, public_result, public_status
 
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -31,7 +34,8 @@ def build_server(settings: GatewaySettings) -> MCPServer:
             "Do not send repository paths, shell commands, or credentials. "
             "submit_task only stores a job. A separate worker claims it. "
             "The default worker refuses code execution. Model-written code is never executed. "
-            "Research tasks are not implemented."
+            "Research tasks are not implemented. Optional ask_local_model returns text only; "
+            "it cannot run commands, read files or make changes."
         ),
     )
 
@@ -61,6 +65,36 @@ def build_server(settings: GatewaySettings) -> MCPServer:
     def get_project_status() -> dict:
         """Return pilot readiness. Does not run a task."""
         return store.project_status()
+
+    if settings.model_chat_enabled:
+        # Only the owner-started home script enables this tool. Keep Ollama
+        # bounded to one in-flight request so external clients cannot fan out
+        # inference on a battery-powered Mac.
+        gate = threading.BoundedSemaphore(1)
+
+        @mcp.tool()
+        def ask_local_model(prompt: str) -> dict:
+            """Ask local Ollama for a text answer; no file access or execution."""
+            if not gate.acquire(blocking=False):
+                raise ToolError("local_model_busy")
+            try:
+                try:
+                    answer = request_local_chat(
+                        model=settings.model_chat_model or "",
+                        prompt=prompt,
+                        timeout=settings.model_chat_timeout_seconds,
+                    )
+                except (InferenceError, OSError, UnicodeError) as exc:
+                    raise ToolError("local_model_failed") from None
+            finally:
+                gate.release()
+            return {
+                "model": settings.model_chat_model,
+                "answer": answer,
+                "inference_location": "localhost",
+                "executes_code": False,
+                "files_changed": False,
+            }
 
     return mcp
 
@@ -92,10 +126,14 @@ def _send_json(send, status: int, payload: dict, extra_headers: list[tuple[bytes
 
 
 class _Guard:
-    def __init__(self, app, token: str, limiter: RateLimiter) -> None:
+    def __init__(
+        self, app, token: str, limiter: RateLimiter,
+        access_verifier: AccessVerifier | None = None,
+    ) -> None:
         self.app = app
         self.token = token
         self.limiter = limiter
+        self.access_verifier = access_verifier
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -105,8 +143,16 @@ class _Guard:
         if not self.limiter.allow(str(client[0])):
             await _send_json(send, 429, {"error": "rate_limited"})
             return
-        header = _header(scope, "authorization")
-        if not bearer_matches(header, self.token):
+        if self.access_verifier is not None:
+            # Cloudflare Managed OAuth forwards a signed assertion, *not*
+            # our locally generated bearer token. Never bypass Access with
+            # the local token once Access mode is enabled.
+            allowed = self.access_verifier.verify(
+                _header(scope, "cf-access-jwt-assertion")
+            )
+        else:
+            allowed = bearer_matches(_header(scope, "authorization"), self.token)
+        if not allowed:
             await _send_json(
                 send,
                 401,
@@ -125,13 +171,16 @@ def _header(scope, name: str) -> str:
 
 
 def _security(settings: GatewaySettings) -> TransportSecuritySettings | None:
-    if settings.host in {"127.0.0.1", "localhost", "::1"}:
+    # Named tunnels forward to a loopback-bound gateway but preserve the
+    # external Host. The MCP SDK's default localhost-only allowlist would
+    # otherwise reject those requests.
+    if not settings.public_host and settings.host in {"127.0.0.1", "localhost", "::1"}:
         return None
     host = settings.public_host or ""
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
-        allowed_hosts=[host, f"{host}:443", f"{host}:*", "127.0.0.1:*", "localhost:*"],
-        allowed_origins=[f"https://{host}", f"http://{host}"],
+        allowed_hosts=[host, f"{host}:443", "127.0.0.1:*", "localhost:*"],
+        allowed_origins=[f"https://{host}"],
     )
 
 
@@ -149,6 +198,11 @@ def http_app(settings: GatewaySettings):
         app,
         settings.token,
         RateLimiter(settings.rate_limit_per_minute, 60),
+        access_verifier=(
+            AccessVerifier(settings.access_team_domain, settings.access_audience)
+            if settings.access_team_domain and settings.access_audience
+            else None
+        ),
     )
 
 

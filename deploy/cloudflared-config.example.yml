@@ -1,0 +1,21 @@
+# COPY and edit locally. This is a placeholder, NOT a deployed tunnel.
+# The named tunnel and DNS name must be created in YOUR Cloudflare account.
+# Never commit the real credentials-file or JWT/audience values.
+#
+# Protect the hostname with a Cloudflare Access application configured for
+# Managed OAuth and your own access policy before pointing cloud clients here.
+# The local gateway must independently verify CF Access JWT assertions:
+# WRKHORSE_PUBLIC_HOST=agent.example.org
+# WRKHORSE_ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+# WRKHORSE_ACCESS_AUDIENCE=<your Access application AUD tag>
+#
+# Run: cloudflared tunnel --config PATH_TO_YOUR_PRIVATE_CONFIG.yml run
+tunnel: replace-with-your-real-tunnel-uuid
+credentials-file: /Users/REPLACE_ME/.cloudflared/replace-with-your-real-tunnel-uuid.json
+ingress:
+  - hostname: agent.example.org
+    path: ^/mcp$
+    service: http://127.0.0.1:8765
+    originRequest:
+      httpHostHeader: agent.example.org
+  - service: http_status:404

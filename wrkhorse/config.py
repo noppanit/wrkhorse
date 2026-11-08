@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -82,6 +83,11 @@ class GatewaySettings:
     port: int
     allow_public_bind: bool
     public_host: str | None
+    access_team_domain: str | None
+    access_audience: str | None
+    model_chat_enabled: bool
+    model_chat_model: str | None
+    model_chat_timeout_seconds: float
     rate_limit_per_minute: int
     max_body_bytes: int
     stale_seconds: float
@@ -128,6 +134,33 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         raise ConfigError(
             "WRKHORSE_PUBLIC_HOST is required when the gateway is not on loopback"
         )
+    # A tunnel can forward to a loopback-bound server while preserving the
+    # public Host. Never accept userinfo, wildcards, schemes or paths.
+    if public_host and not re.fullmatch(
+        r"[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?", public_host
+    ):
+        raise ConfigError("WRKHORSE_PUBLIC_HOST must be a bare DNS hostname")
+    team_domain = _env("WRKHORSE_ACCESS_TEAM_DOMAIN") or None
+    audience = _env("WRKHORSE_ACCESS_AUDIENCE") or None
+    if bool(team_domain) != bool(audience):
+        raise ConfigError("WRKHORSE_ACCESS_TEAM_DOMAIN and WRKHORSE_ACCESS_AUDIENCE must both be set")
+    if team_domain is not None:
+        # Only pinned, trusted Cloudflare Access JWKS endpoints are permitted.
+        if not public_host:
+            raise ConfigError("WRKHORSE_PUBLIC_HOST is required with Cloudflare Access")
+        if not re.fullmatch(
+            r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,180}\.cloudflareaccess\.com",
+            team_domain,
+        ):
+            raise ConfigError("WRKHORSE_ACCESS_TEAM_DOMAIN must be your Cloudflare Access domain")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", audience or ""):
+            raise ConfigError("WRKHORSE_ACCESS_AUDIENCE must be an Access application AUD tag")
+    chat_enabled = _env("WRKHORSE_MODEL_CHAT_ENABLED") == "1"
+    chat_model = _env("WRKHORSE_INFERENCE_MODEL") or None
+    if chat_enabled and (
+        not chat_model or len(chat_model) > 200 or chat_model.endswith(":cloud")
+    ):
+        raise ConfigError("model chat needs a locally downloaded Ollama model tag")
     stale, attempts = _shared_limits()
     return GatewaySettings(
         token=token,
@@ -136,6 +169,13 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         port=chosen_port,
         allow_public_bind=allow_public,
         public_host=public_host,
+        access_team_domain=team_domain,
+        access_audience=audience,
+        model_chat_enabled=chat_enabled,
+        model_chat_model=chat_model if chat_enabled else None,
+        model_chat_timeout_seconds=_bounded_float(
+            "WRKHORSE_MODEL_CHAT_TIMEOUT_SECONDS", 90, 1, 120
+        ),
         rate_limit_per_minute=_bounded_int("WRKHORSE_RATE_LIMIT_PER_MINUTE", 60, 1, 600),
         max_body_bytes=65536,
         stale_seconds=stale,
@@ -146,9 +186,9 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
 def load_worker_settings() -> WorkerSettings:
     """Load worker settings. This function does not read the gateway token."""
     mode = _env("WRKHORSE_EXECUTION_MODE") or "disabled"
-    if mode not in {"disabled", "trusted-local-demo"}:
+    if mode not in {"disabled", "trusted-local-demo", "inference-only"}:
         raise ConfigError(
-            "WRKHORSE_EXECUTION_MODE must be disabled or trusted-local-demo"
+            "WRKHORSE_EXECUTION_MODE must be disabled, trusted-local-demo or inference-only"
         )
     base_url = _env("WRKHORSE_INFERENCE_BASE_URL") or None
     api_key = os.environ.get("WRKHORSE_INFERENCE_API_KEY")
@@ -158,6 +198,20 @@ def load_worker_settings() -> WorkerSettings:
     model = _env("WRKHORSE_INFERENCE_MODEL") or None
     if model is not None and len(model) > 200:
         raise ConfigError("WRKHORSE_INFERENCE_MODEL is too long")
+    if mode == "inference-only":
+        # This deployment mode is intended for a Mac that runs its own
+        # Ollama. Reject all remote inference destinations and :cloud tags.
+        if base_url != "http://127.0.0.1:11434/v1":
+            raise ConfigError(
+                "inference-only requires WRKHORSE_INFERENCE_BASE_URL="
+                "http://127.0.0.1:11434/v1"
+            )
+        if not model or model.endswith(":cloud"):
+            raise ConfigError("inference-only requires a local Ollama model tag")
+        if api_key not in (None, "ollama-local"):
+            raise ConfigError("inference-only refuses a real inference API key")
+        api_key = "ollama-local"  # ignored by local Ollama OpenAI compatibility
+
     stale, attempts = _shared_limits()
     return WorkerSettings(
         db_path=db_path(),
