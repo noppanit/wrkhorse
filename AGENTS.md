@@ -35,6 +35,14 @@ Local-model endpoint policy (2026-11-08): the model URL is no longer hard-coded 
 
 The next agent should **not rebuild the bridge from scratch**. Run the local smoke test on the owner's Mac and inspect actual inference results; then configure a protected named Cloudflare Tunnel and verify a compatible external MCP client with a read-only tool call before enabling even the synthetic task. Access Managed OAuth needs RFC 8707-compatible clients and the owner's real hostname/team-domain/AUD. The current ChatGPT Plus iPhone client cannot invoke a custom MCP endpoint directly under documented availability.
 
+## Owner update — Grok Bot connection and Pi-style GitHub drafts (2026-11-07)
+
+The owner reports their **wrkhorse → Grok Bot connector now works**. Treat this as user-reported operational evidence, **not** independently reviewed server logs.
+
+The next scoped feature is implemented in [docs/GITHUB-DRAFTS.md](docs/GITHUB-DRAFTS.md). The authenticated MCP server **optionally** exposes Pi-inspired `read_file`, `write_file` and `edit_file` when the owner configures a **single repository**, a fine-grained GitHub token and `WRKHORSE_GITHUB_DRAFTS_ENABLED=1`. The tools can access only `posts/drafts/<slug>.md`; new writes create a random branch + **draft PR**, and edits require exactly one matching old-text segment and a still-open draft PR. Never enable unrestricted Pi `bash` remotely. **Direct commits to main, merges, arbitrary files, deletions, and publication remain prohibited.** A draft PR in a public repository is public.
+
+Unit and local MCP integration tests exercise these boundaries; the first *live* GitHub draft through Grok Bot is still unverified. Always confirm the owner is intentionally opting into this access before trying it on a real repository. Prefer a private content repository to avoid publicly exposing unfinished posts.
+
 ## Agent task order
 
 1. Inspect existing server/auth/config/tests and run `make test` before editing. Do not assume the current bearer-token MCP endpoint already satisfies external client OAuth requirements.
@@ -48,7 +56,7 @@ Full milestones, acceptance criteria, and source links are in [docs/LOCAL-MCP-HA
 
 ## Safety and collaboration rules
 
-- **Default deny:** the service supports only `sample-add` and known modes. No arbitrary shell, arbitrary paths, client-chosen URLs, repository writes, merges, unattended background jobs, or unsandboxed execution.
+- **Default deny:** local inference supports only known tasks and bounded model chat. GitHub writes are separately opt-in, limited to Markdown drafts through draft PRs only. No arbitrary shell, arbitrary file paths, client-chosen URLs, writes to main, merges, unattended background jobs, or unsandboxed execution.
 - **Never execute model-generated code** in the pilot; a parsed/validated diff is a proposal, not a passing test or a deployed change.
 - Use GitHub **only for source code, plans, reviews and evidence** unless the owner explicitly changes the runtime architecture. Do not make GitHub Issues a hidden task queue.
 - Do not expose `localhost:11434` or an unauthenticated MCP endpoint publicly. A tunnel is network transport **not authorization**.

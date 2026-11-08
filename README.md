@@ -18,6 +18,14 @@ Connection setup and budget status (2026-11-07): [docs/CONNECTIONS-2026-11-07.md
 
 Details: [docs/READINESS.md](docs/READINESS.md), [docs/DECISIONS.md](docs/DECISIONS.md), [docs/GROK-BOT.md](docs/GROK-BOT.md), [docs/RUNPOD.md](docs/RUNPOD.md).
 
+## Safe GitHub draft-post editing (Pi-inspired, optional)
+
+The owner reports a successful **Grok Bot → wrkhorse** connection on the home setup (2026-11-07). This is owner-reported, not independently verified with logs. The following *new* GitHub editing capability is separately opt-in and has only been verified with local network-free tests.
+
+For Pi-style file tools, see [the GitHub drafting setup](docs/GITHUB-DRAFTS.md). Once you configure a **single-repository fine-grained GitHub token** on the Mac and set `WRKHORSE_GITHUB_DRAFTS_ENABLED=1`, authenticated clients get three additional MCP tools: `read_file`, `write_file` and `edit_file`. Only `posts/drafts/<slug>.md` in your chosen repository is accessible.
+
+A write creates a **new branch and draft pull request**. An edit requires an exact, unique old-text match and a still-open draft PR. No remote `bash`, arbitrary path, direct write to `main`, merge, delete or publish tool is provided. **Draft PRs in public repos are public.** Use a private content repository for confidential drafts.
+
 ## Deploy the local model on your MacBook Air
 
 **Ready for local installation and testing; not yet tested on the owner's Mac or through a real Grok/Claude/OpenAI cloud client.** Use [the Mac deployment guide](docs/DEPLOY-MACBOOK.md) and the [cross-agent handoff](AGENTS.md).
