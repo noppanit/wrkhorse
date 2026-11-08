@@ -83,6 +83,8 @@ def _environment() -> dict[str, str]:
     env.update(defaults)
     env.pop("WRKHORSE_ALLOW_PUBLIC_BIND", None)
     env.pop("WRKHORSE_ALLOW_LAN_MODEL", None)
+    for name in ("WRKHORSE_CLOUD_INFERENCE_ENABLED", "WRKHORSE_CLOUD_INFERENCE_BASE_URL", "WRKHORSE_CLOUD_INFERENCE_MODEL"):
+        env.pop(name, None)
     return env
 
 def start(*, check: bool = False) -> int:
