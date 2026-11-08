@@ -43,6 +43,18 @@ class InferenceError(Exception):
     """The model call did not produce a usable diff."""
 
 
+class InferenceNotConfigured(InferenceError):
+    """No model URL, model tag or credential; no request was sent."""
+
+
+class InferenceTimeout(InferenceError):
+    """The single overall deadline expired."""
+
+
+class InferenceEmptyResponse(InferenceError):
+    """The model answered, but with no usable text (empty or truncated)."""
+
+
 def chat_endpoint(base_url: str) -> str:
     parts = urlsplit(base_url.strip())
     if parts.scheme not in {"http", "https"} or not parts.hostname:
@@ -70,9 +82,9 @@ def request_diff(
     max_tokens: int = 1024,
 ) -> str:
     if not api_key or not model:
-        raise InferenceError("inference is not configured")
+        raise InferenceNotConfigured("inference is not configured")
     if timeout <= 0:
-        raise InferenceError("inference deadline exceeded")
+        raise InferenceTimeout("inference deadline exceeded")
     endpoint = chat_endpoint(base_url)
     body = {
         "model": model,
@@ -93,7 +105,7 @@ def request_diff(
     try:
         return asyncio.run(_bounded(endpoint, api_key, body, timeout, should_stop))
     except TimeoutError as exc:
-        raise InferenceError("inference deadline exceeded") from exc
+        raise InferenceTimeout("inference deadline exceeded") from exc
 
 
 def request_local_chat(
@@ -118,7 +130,7 @@ def request_local_chat(
         # so a caller cannot pass an arbitrary URL.
         local_base, _scope = validate_base_url(base_url, allow_lan=allow_lan, resolve=False)
     except LocalModelError as exc:
-        raise InferenceError("local model is not configured") from exc
+        raise InferenceNotConfigured("local model is not configured") from exc
     if not isinstance(prompt, str) or not prompt.strip():
         raise InferenceError("local model prompt is empty")
     if len(prompt.encode("utf-8")) > 4096:
@@ -151,7 +163,7 @@ def request_local_chat(
             None,
         ))
     except TimeoutError as exc:
-        raise InferenceError("local model deadline exceeded") from exc
+        raise InferenceTimeout("local model deadline exceeded") from exc
     if len(answer.encode("utf-8")) > 16_384:
         raise InferenceError("local model output too large")
     return answer
@@ -251,9 +263,9 @@ def _parse_content(raw: bytes) -> str:
     content = strip_reasoning(content)
     if not content.strip():
         if isinstance(choice, dict) and choice.get("finish_reason") == "length":
-            raise InferenceError(
+            raise InferenceEmptyResponse(
                 "inference output was truncated; raise WRKHORSE_INFERENCE_MAX_TOKENS "
                 "or use a non-reasoning model"
             )
-        raise InferenceError("inference response was empty")
+        raise InferenceEmptyResponse("inference response was empty")
     return content

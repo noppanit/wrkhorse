@@ -14,11 +14,11 @@ from wrkhorse.config import WorkerSettings
 from wrkhorse.diffutil import DiffError, apply_diff, parse_unified, strip_fences
 from wrkhorse.executor import run_unittest
 from wrkhorse.fixtures import load_sample, prompt_for
-from wrkhorse.inference import InferenceError, request_diff
+from wrkhorse.inference import InferenceError, InferenceNotConfigured, request_diff
 from wrkhorse.model_router import load_router
 from wrkhorse.logsetup import get_logger
 from wrkhorse.sandbox import SandboxError, copy_tree
-from wrkhorse.store import Store, is_busy
+from wrkhorse.store import JobStatus, Store, is_busy
 
 log = get_logger(__name__)
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -71,6 +71,30 @@ def _result(
         "subprocess_is_sandbox": False,
         "artifact_dir": recorded,
     }
+
+
+def _early_exit(
+    status: JobStatus,
+    code: str,
+    job_id: str,
+    *,
+    diff: str | None = None,
+    inference_called: bool = False,
+) -> tuple[JobStatus, str, dict]:
+    """A refusal or failure before any test ran."""
+    return (
+        status,
+        code,
+        _result(
+            code=code,
+            diff=diff,
+            tests_ran=False,
+            tests_passed=None,
+            test_output=None,
+            inference_called=inference_called,
+            job_id=job_id,
+        ),
+    )
 
 
 class Worker:
@@ -129,7 +153,7 @@ class Worker:
                     type(exc).__name__,
                 )
                 status, error, result = (
-                    "failed",
+                    JobStatus.FAILED,
                     "worker_error",
                     _result(
                         code="worker_error",
@@ -158,36 +182,12 @@ class Worker:
             stop.set()
             thread.join(timeout=1)
 
-    def _process(self, job: dict, lease_lost: threading.Event) -> tuple[str, str | None, dict]:
+    def _process(self, job: dict, lease_lost: threading.Event) -> tuple[JobStatus, str | None, dict]:
         job_id = job["job_id"]
         if self.settings.execution_mode not in {"trusted-local-demo", "inference-only"}:
-            return (
-                "refused",
-                "execution_disabled",
-                _result(
-                    code="execution_disabled",
-                    diff=None,
-                    tests_ran=False,
-                    tests_passed=None,
-                    test_output=None,
-                    inference_called=False,
-                    job_id=job_id,
-                ),
-            )
+            return _early_exit(JobStatus.REFUSED, "execution_disabled", job_id)
         if self.settings.execution_mode == "inference-only" and job["mode"] != "inference":
-            return (
-                "refused",
-                "inference_only",
-                _result(
-                    code="inference_only",
-                    diff=None,
-                    tests_ran=False,
-                    tests_passed=None,
-                    test_output=None,
-                    inference_called=False,
-                    job_id=job_id,
-                ),
-            )
+            return _early_exit(JobStatus.REFUSED, "inference_only", job_id)
         manifest, mock_patch, repo = load_sample()
         allowed = manifest["allowed_paths"][0]
         inference_called = False
@@ -195,12 +195,6 @@ class Worker:
             if job["mode"] == "mock":
                 diff_text = mock_patch
             elif job["mode"] == "inference":
-                if not (
-                    self.settings.inference_base_url
-                    and self.settings.inference_api_key
-                    and self.settings.inference_model
-                ):
-                    raise InferenceError("inference is not configured")
                 inference_called = True
                 diff_text = self._infer(manifest, repo, lease_lost.is_set)
             else:
@@ -225,32 +219,20 @@ class Worker:
             # this the owner sees "inference_failed" and cannot tell a cold
             # model, a refused connection and a malformed diff apart.
             log.warning("job %s: %s (%s)", job_id, type(exc).__name__, exc)
-            if isinstance(exc, InferenceError) and str(exc) == "inference is not configured":
+            if isinstance(exc, InferenceNotConfigured):
                 code = "inference_not_configured"
-                inference_called = False
+                inference_called = False  # raised before any request was sent
             elif isinstance(exc, InferenceError):
                 code = "inference_failed"
             else:
                 code = "diff_rejected"
-            return (
-                "failed",
-                code,
-                _result(
-                    code=code,
-                    diff=None,
-                    tests_ran=False,
-                    tests_passed=None,
-                    test_output=None,
-                    inference_called=inference_called,
-                    job_id=job_id,
-                ),
-            )
+            return _early_exit(JobStatus.FAILED, code, job_id, inference_called=inference_called)
 
         attempts = int(job["attempts"])
         if job["mode"] == "inference":
             self._store_diff(job_id, attempts, diff_text, None)
             return (
-                "diff_ready",
+                JobStatus.DIFF_READY,
                 None,
                 _result(
                     code="diff_ready",
@@ -265,24 +247,12 @@ class Worker:
             )
 
         if tests is None:
-            return (
-                "failed",
-                "diff_rejected",
-                _result(
-                    code="diff_rejected",
-                    diff=diff_text,
-                    tests_ran=False,
-                    tests_passed=None,
-                    test_output=None,
-                    inference_called=False,
-                    job_id=job_id,
-                ),
-            )
+            return _early_exit(JobStatus.FAILED, "diff_rejected", job_id, diff=diff_text)
         self._store_diff(job_id, int(job["attempts"]), diff_text, tests.output)
         if not tests.passed:
             code = "test_timeout" if tests.timed_out else "tests_failed"
             return (
-                "failed",
+                JobStatus.FAILED,
                 code,
                 _result(
                     code=code,
@@ -296,7 +266,7 @@ class Worker:
                 ),
             )
         return (
-            "succeeded",
+            JobStatus.SUCCEEDED,
             None,
             _result(
                 code="tests_passed",
@@ -316,7 +286,7 @@ class Worker:
             and self.settings.inference_api_key
             and self.settings.inference_model
         ):
-            raise InferenceError("inference is not configured")
+            raise InferenceNotConfigured("inference is not configured")
         # Preserve the historical trusted-local-demo endpoint behavior.
         # Router policy applies only to the home inference-only worker.
         if self.settings.execution_mode != "inference-only":

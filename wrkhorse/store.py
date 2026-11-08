@@ -7,6 +7,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
+from enum import StrEnum
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
@@ -38,7 +39,25 @@ CREATE TABLE IF NOT EXISTS heartbeats (
 );
 """
 
-TERMINAL = {"succeeded", "diff_ready", "failed", "refused"}
+class JobStatus(StrEnum):
+    """Every value tasks.status can hold.
+
+    queued -> running -> (succeeded | diff_ready | failed | refused). A stale
+    running job is re-claimed (running again, attempts + 1) or, once attempts
+    are exhausted, marked failed. Terminal states never change.
+    """
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    DIFF_READY = "diff_ready"
+    FAILED = "failed"
+    REFUSED = "refused"
+
+
+TERMINAL = frozenset(
+    {JobStatus.SUCCEEDED, JobStatus.DIFF_READY, JobStatus.FAILED, JobStatus.REFUSED}
+)
 
 
 def utcnow() -> datetime:
@@ -108,9 +127,9 @@ class Store:
                     INSERT INTO tasks (
                         job_id, task_name, mode, status, attempts, max_attempts,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
                     """,
-                    (job_id, task_name, mode, self.max_attempts, now, now),
+                    (job_id, task_name, mode, JobStatus.QUEUED.value, self.max_attempts, now, now),
                 )
                 row = con.execute("SELECT * FROM tasks WHERE job_id = ?", (job_id,)).fetchone()
             if row is None:
@@ -150,12 +169,12 @@ class Store:
                         """
                         SELECT job_id, attempts, max_attempts, status
                         FROM tasks
-                        WHERE status = 'queued'
-                           OR (status = 'running' AND claimed_at < ?)
+                        WHERE status = ?
+                           OR (status = ? AND claimed_at < ?)
                         ORDER BY created_at
                         LIMIT 1
                         """,
-                        (stale_before,),
+                        (JobStatus.QUEUED.value, JobStatus.RUNNING.value, stale_before),
                     ).fetchone()
                     if row is None:
                         break
@@ -163,16 +182,16 @@ class Store:
                         con.execute(
                             """
                             UPDATE tasks
-                            SET status = 'failed', error = 'attempts_exhausted', updated_at = ?
-                            WHERE job_id = ? AND status = 'running'
+                            SET status = ?, error = 'attempts_exhausted', updated_at = ?
+                            WHERE job_id = ? AND status = ?
                             """,
-                            (now, row["job_id"]),
+                            (JobStatus.FAILED.value, now, row["job_id"], JobStatus.RUNNING.value),
                         )
                         continue
                     updated = con.execute(
                         """
                         UPDATE tasks
-                        SET status = 'running',
+                        SET status = ?,
                             claimed_by = ?,
                             claimed_at = ?,
                             attempts = attempts + 1,
@@ -181,11 +200,14 @@ class Store:
                         WHERE job_id = ?
                           AND attempts < max_attempts
                           AND (
-                              status = 'queued'
-                              OR (status = 'running' AND claimed_at < ?)
+                              status = ?
+                              OR (status = ? AND claimed_at < ?)
                           )
                         """,
-                        (worker_id, now, now, row["job_id"], stale_before),
+                        (
+                            JobStatus.RUNNING.value, worker_id, now, now, row["job_id"],
+                            JobStatus.QUEUED.value, JobStatus.RUNNING.value, stale_before,
+                        ),
                     )
                     if updated.rowcount == 1:
                         stored = con.execute(
@@ -209,9 +231,9 @@ class Store:
                     """
                     UPDATE tasks
                     SET claimed_at = ?, updated_at = ?
-                    WHERE job_id = ? AND claimed_by = ? AND attempts = ? AND status = 'running'
+                    WHERE job_id = ? AND claimed_by = ? AND attempts = ? AND status = ?
                     """,
-                    (now, now, job_id, worker_id, attempts),
+                    (now, now, job_id, worker_id, attempts, JobStatus.RUNNING.value),
                 )
             return updated.rowcount == 1
 
@@ -223,7 +245,7 @@ class Store:
         worker_id: str,
         attempts: int,
         *,
-        status: str,
+        status: JobStatus,
         error: str | None,
         result: dict,
     ) -> bool:
@@ -239,9 +261,12 @@ class Store:
                     """
                     UPDATE tasks
                     SET status = ?, error = ?, result_json = ?, updated_at = ?
-                    WHERE job_id = ? AND claimed_by = ? AND attempts = ? AND status = 'running'
+                    WHERE job_id = ? AND claimed_by = ? AND attempts = ? AND status = ?
                     """,
-                    (status, error, payload, now, job_id, worker_id, attempts),
+                    (
+                        JobStatus(status).value, error, payload, now,
+                        job_id, worker_id, attempts, JobStatus.RUNNING.value,
+                    ),
                 )
             return updated.rowcount == 1
 

@@ -15,6 +15,7 @@ from urllib.request import Request, build_opener, ProxyHandler
 from urllib.error import URLError
 
 from wrkhorse.fixtures import load_sample, prompt_for
+from wrkhorse.local_model import LocalModelError, validate_model_tag
 from wrkhorse.runpod_pilot import RunpodPilotError, validate_sample_result
 
 REPO = "noppanit/wrkhorse"
@@ -226,7 +227,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.interval < 10:
         parser.error("--interval must be >= 10")
-    if not args.model or len(args.model) > 100 or ":cloud" in args.model:
+    try:
+        validate_model_tag(args.model)
+    except LocalModelError:
         parser.error("select a locally downloaded Ollama model, not a cloud model")
     try:
         if args.check:
