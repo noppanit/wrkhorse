@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -128,6 +129,12 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         raise ConfigError(
             "WRKHORSE_PUBLIC_HOST is required when the gateway is not on loopback"
         )
+    # A tunnel can forward to a loopback-bound server while preserving the
+    # public Host. Never accept userinfo, wildcards, schemes or paths.
+    if public_host and not re.fullmatch(
+        r"[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?", public_host
+    ):
+        raise ConfigError("WRKHORSE_PUBLIC_HOST must be a bare DNS hostname")
     stale, attempts = _shared_limits()
     return GatewaySettings(
         token=token,
@@ -146,9 +153,9 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
 def load_worker_settings() -> WorkerSettings:
     """Load worker settings. This function does not read the gateway token."""
     mode = _env("WRKHORSE_EXECUTION_MODE") or "disabled"
-    if mode not in {"disabled", "trusted-local-demo"}:
+    if mode not in {"disabled", "trusted-local-demo", "inference-only"}:
         raise ConfigError(
-            "WRKHORSE_EXECUTION_MODE must be disabled or trusted-local-demo"
+            "WRKHORSE_EXECUTION_MODE must be disabled, trusted-local-demo or inference-only"
         )
     base_url = _env("WRKHORSE_INFERENCE_BASE_URL") or None
     api_key = os.environ.get("WRKHORSE_INFERENCE_API_KEY")
@@ -158,6 +165,20 @@ def load_worker_settings() -> WorkerSettings:
     model = _env("WRKHORSE_INFERENCE_MODEL") or None
     if model is not None and len(model) > 200:
         raise ConfigError("WRKHORSE_INFERENCE_MODEL is too long")
+    if mode == "inference-only":
+        # This deployment mode is intended for a Mac that runs its own
+        # Ollama. Reject all remote inference destinations and :cloud tags.
+        if base_url != "http://127.0.0.1:11434/v1":
+            raise ConfigError(
+                "inference-only requires WRKHORSE_INFERENCE_BASE_URL="
+                "http://127.0.0.1:11434/v1"
+            )
+        if not model or model.endswith(":cloud"):
+            raise ConfigError("inference-only requires a local Ollama model tag")
+        if api_key not in (None, "ollama-local"):
+            raise ConfigError("inference-only refuses a real inference API key")
+        api_key = "ollama-local"  # ignored by local Ollama OpenAI compatibility
+
     stale, attempts = _shared_limits()
     return WorkerSettings(
         db_path=db_path(),
