@@ -27,6 +27,12 @@ This route is **planned, not deployed or verified**.
 - A no-GitHub **Runpod relay** was only a proposal; do not deploy or pay for it to satisfy the current decision. See [docs/HOME-NO-GITHUB-OPTION.md](docs/HOME-NO-GITHUB-OPTION.md).
 - **No evidence** that Grok Bot, Grok consumer, Claude consumer, or ChatGPT iPhone has invoked the home's MCP endpoint. The home Mac's chip, memory, Ollama installation, domain, and Access configuration are **unknown**.
 
+## Mac deployment implementation status (2026-11-07)
+
+The repository now contains [docs/DEPLOY-MACBOOK.md](docs/DEPLOY-MACBOOK.md), `scripts/start-home.sh`, `scripts/probe_home.py`, `wrkhorse/access.py`, and `tests/test_home_deployment.py`. The home startup selects **inference-only** mode, restricts inference to local Ollama, and uses either local bearer auth or verified Cloudflare Access JWT/Managed OAuth. **Only network-free CI has verified this code; the owner's real Mac and cloud-client compatibility are still untested.**
+
+The next agent should **not rebuild the bridge from scratch**. Run the local smoke test on the owner's Mac and inspect actual inference results; then configure a protected named Cloudflare Tunnel and verify a compatible external MCP client with a read-only tool call before enabling even the synthetic task. Access Managed OAuth needs RFC 8707-compatible clients and the owner's real hostname/team-domain/AUD. The current ChatGPT Plus iPhone client cannot invoke a custom MCP endpoint directly under documented availability.
+
 ## Agent task order
 
 1. Inspect existing server/auth/config/tests and run `make test` before editing. Do not assume the current bearer-token MCP endpoint already satisfies external client OAuth requirements.
