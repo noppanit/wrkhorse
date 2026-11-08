@@ -146,7 +146,7 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         if not public_host:
             raise ConfigError("WRKHORSE_PUBLIC_HOST is required with Cloudflare Access")
         if not re.fullmatch(
-            r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,180}\\.cloudflareaccess\\.com",
+            r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,180}\.cloudflareaccess\.com",
             team_domain,
         ):
             raise ConfigError("WRKHORSE_ACCESS_TEAM_DOMAIN must be your Cloudflare Access domain")
