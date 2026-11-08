@@ -125,7 +125,12 @@ else
   echo "No public tunnel hostname configured. Loopback-only MCP calls are supported."
 fi
 
-python -m wrkhorse worker &
+# Least privilege: only the MCP gateway needs GitHub repo credentials.
+# Keep them out of the separate local inference worker environment.
+(
+  unset WRKHORSE_GITHUB_TOKEN WRKHORSE_GITHUB_DRAFT_REPO WRKHORSE_GITHUB_DRAFTS_ENABLED
+  python -m wrkhorse worker
+) &
 WORKER_PID=$!
 CAFFEINATE_PID=""
 cleanup() {
