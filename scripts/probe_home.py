@@ -37,7 +37,7 @@ def _local_url(url: str) -> str:
     return url
 
 
-async def check(url: str, token: str, submit: bool) -> None:
+async def check(url: str, token: str, submit: bool, ask: str | None) -> None:
     async with httpx2.AsyncClient(
         headers={"Authorization": f"Bearer {token}"},
         timeout=20, follow_redirects=False, trust_env=False,
@@ -54,8 +54,18 @@ async def check(url: str, token: str, submit: bool) -> None:
                 print("Authenticated local MCP call succeeded.")
                 print("Tools:", ", ".join(sorted(names)))
                 print("Project status keys:", ", ".join(sorted(project)))
+                if ask is not None:
+                    if "ask_local_model" not in names:
+                        raise RuntimeError("ask_local_model is disabled on this MCP server")
+                    result = _payload(await session.call_tool(
+                        "ask_local_model", {"prompt": ask}
+                    ))
+                    print("Local model answer:")
+                    print(result.get("answer", ""))
+                    print("No commands were executed or files changed.")
+                    return
                 if not submit:
-                    print("Read-only probe complete. Re-run with --submit to call local Ollama.")
+                    print("Read-only probe complete. Use --ask TEXT or --submit for local Ollama.")
                     return
                 task = _payload(await session.call_tool(
                     "submit_task", {"task_name": "sample-add", "mode": "inference"}
@@ -84,13 +94,15 @@ async def check(url: str, token: str, submit: bool) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--submit", action="store_true", help="Explicitly call the local model")
+    modes = p.add_mutually_exclusive_group()
+    modes.add_argument("--submit", action="store_true", help="Run the safe coding fixture")
+    modes.add_argument("--ask", default=None, help="Ask local Ollama a text-only question")
     p.add_argument("--url", default="http://127.0.0.1:8765/mcp")
     args = p.parse_args()
     url = _local_url(args.url)
     path = Path(__file__).resolve().parents[1] / "var" / "mcp-token"
     token = path.read_text(encoding="utf-8").strip()
-    asyncio.run(check(url, token, args.submit))
+    asyncio.run(check(url, token, args.submit, args.ask))
     return 0
 
 
