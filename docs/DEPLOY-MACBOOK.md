@@ -1,6 +1,6 @@
 # MacBook Air deployment: local Ollama + wrkhorse MCP
 
-**Code prepared for installation; NOT yet exercised on the owner's MacBook or from a cloud AI client.** The purpose of this deployment is to let **compatible, authenticated MCP clients** submit a safe synthetic coding task to an Ollama model **running on your Mac**. This is a real MCP server and a local inference worker—not the GitHub Issues bridge or a Runpod relay.
+**Code prepared for installation; NOT yet exercised on the owner's MacBook or from a cloud AI client.** The purpose is to let **compatible, authenticated MCP clients** ask arbitrary bounded **text-only questions** of an Ollama model **running on your Mac**, as well as submit a safe synthetic coding fixture. This is a real MCP server and a local inference worker—not the GitHub Issues bridge or a Runpod relay.
 
 ## The architecture
 
@@ -49,11 +49,13 @@ Keep the startup Terminal open. In a **second Terminal**:
 cd wrkhorse
 source .venv/bin/activate
 python scripts/probe_home.py
+python scripts/probe_home.py --ask "Explain what a Python dictionary is in two sentences."
 python scripts/probe_home.py --submit
 ```
 
-- First command: authenticates to the local MCP endpoint, lists its four tools, and calls the read-only `get_project_status`.
-- Second command: explicitly submits `sample-add` in `inference` mode, polls status, then prints the model's proposed diff or a safe failure. The script will not send your local token to any public URL.
+- First command: authenticates to local MCP, lists available tools, and calls read-only `get_project_status`.
+- Second command: invokes `ask_local_model` with a bounded text prompt and returns a local Ollama answer, with **no file access, shell or model-written code execution**.
+- Third command: explicitly submits `sample-add` in `inference` mode, polls status, then prints the model's proposed diff or a safe failure. The script will not send your local token to any public URL.
 - The safe target response changes `return left - right` into `return left + right` in `adder/mathy.py`. It is a **proposal only**; no model-written code gets executed, committed or merged.
 - If model quality is insufficient, retry with the 1.5B or 3B local tag; do not assume every output passes validation.
 
@@ -79,7 +81,7 @@ bash scripts/start-home.sh
 5. Run your private `cloudflared` named tunnel, then test from **outside** the home network. Verify unauthorized requests receive 401/403, an authenticated client's `get_project_status` succeeds, and `https://YOUR_HOSTNAME/api/chat` and any path other than `/mcp` are blocked. Only then permit the synthetic `submit_task` tool.
 6. To revoke remote access, **stop the tunnel** and disable/revoke the Access application/client sessions as needed. To restore local bearer testing, stop the server and restart **without** `WRKHORSE_ACCESS_TEAM_DOMAIN` and `WRKHORSE_ACCESS_AUDIENCE` (and without the tunnel).
 
-**MCP URL:** `https://YOUR_HOSTNAME/mcp`. Tools: `get_project_status`, `submit_task(task_name="sample-add",mode="inference")`, `get_task_status(job_id)`, and `get_task_result(job_id)`. The first client call should be read-only. For the first inference test, tell the AI assistant: "Call get_project_status. With my permission, submit sample-add in inference mode, poll its status and show the exact proposed diff. Do not execute or merge code."
+**MCP URL:** `https://YOUR_HOSTNAME/mcp`. Tools: `get_project_status`, `ask_local_model(prompt)` (text-only, 4 KiB prompt and 16 KiB answer, single concurrent request), `submit_task(task_name="sample-add",mode="inference")`, `get_task_status(job_id)`, and `get_task_result(job_id)`. The first client call should be read-only. For the first inference test, tell the AI assistant: "Call get_project_status. With my permission, submit sample-add in inference mode, poll its status and show the exact proposed diff. Do not execute or merge code."
 
 **Compatibility warning:** Some clients support static bearer credentials but not OAuth; others support OAuth but not the required RFC 8707 flow. They cannot all be made compatible with one tunnel setting. Where a client cannot authenticate, do **not** disable the Access policy or expose the raw gateway; record the limitation and build/test a client-specific standards-compliant adapter separately.
 
@@ -99,8 +101,9 @@ bash scripts/start-home.sh
 
 ## Security and limitations
 
-- **Default worker execution is disabled.** This startup intentionally opts into `inference-only`: it refuses `mode=mock`, never runs tests, never executes the model's proposed code, and accepts only `sample-add`.
+- **Default worker execution and direct-model chat are disabled.** The home startup intentionally opts into `inference-only` and separately enables text-only `ask_local_model`: it refuses `mode=mock`, never runs tests, never executes the model's proposed code, and accepts only `sample-add`.
 - The local inference-only mode refuses non-loopback URLs, cloud-model tags and real model API keys. Ollama's local OpenAI compatibility ignores the dummy value `ollama-local`.
+- The optional `ask_local_model` MCP tool accepts up to 4096 UTF-8 bytes, returns at most 16 KiB of model text, and permits one in-flight invocation at a time. Its local Ollama URL is fixed and it does not execute instructions, commands, files, test runners or model-written code. This is a direct bounded model call (unlike queued coding fixtures); it is not a general coding agent.
 - The gateway requires a high-entropy bearer token **before tool discovery** and rate-limits requests. No token, no tools. Token is stored in `var/mcp-token` (gitignored). Use an appropriate token manager when giving credentials to external clients.
 - The gateway has a request-body cap and a restricted Host/Origin allowlist; the tunnel's public DNS hostname must be explicitly listed via `WRKHORSE_PUBLIC_HOST`. Cloudflare Access is an **additional protective layer**, not automatically configured by this code.
 - No arbitrary file paths, prompt content, repository editing, general command execution, paid GPU allocation, or unattended background scheduling. Queue and worker must stay on the same Mac and share local SQLite.
@@ -112,6 +115,7 @@ bash scripts/start-home.sh
 - [ ] Local Ollama installed and selected model downloaded
 - [ ] `bash scripts/start-home.sh` starts gateway and worker without errors
 - [ ] `python scripts/probe_home.py` authenticates and calls read-only status
+- [ ] `python scripts/probe_home.py --ask "Hello"` returns a local model text answer
 - [ ] `python scripts/probe_home.py --submit` produces valid local model diff (or explicitly records failure)
 - [ ] Named tunnel is separately deployed **with** authenticated access and a valid external Host
 - [ ] Unauthorized external request fails, and raw Ollama endpoint is unreachable externally
