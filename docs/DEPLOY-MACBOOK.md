@@ -61,6 +61,55 @@ python scripts/probe_home.py --submit
 
 For offline config/CI tests before starting the gateway, run `bash scripts/start-home.sh --check` after installing the model and Ollama.
 
+To check only the model side at any time: `source .venv/bin/activate && python -m wrkhorse doctor` (add `--warm` to load the model into memory). It prints the endpoint, whether it is `loopback` or `lan`, whether the model tag is present, and a concrete hint when something is missing.
+
+## Step B2. Using a model on another machine (optional, for later)
+
+The model does not have to run on the Mac that runs wrkhorse. Any **OpenAI-compatible** server works (Ollama, LM Studio, llama.cpp `llama-server`, `mlx_lm.server`, vLLM), on this machine or on another machine **you control** on the home network or your Tailscale tailnet. The gateway, queue and worker still run together on one machine; only the model moves.
+
+On the **model machine** (example: Ollama on a second Mac or a Linux GPU box):
+
+```bash
+# macOS app: launchctl setenv OLLAMA_HOST 0.0.0.0:11434, then restart Ollama
+# Linux service: systemctl edit ollama  ->  Environment="OLLAMA_HOST=0.0.0.0:11434"
+ollama pull qwen2.5-coder:7b
+```
+
+Then **firewall port 11434 to your LAN / tailnet only**: Ollama has no authentication, so `0.0.0.0` exposes it to everyone who can reach that machine. Never forward it on the router. Prefer Tailscale: traffic between machines is encrypted (plain LAN HTTP is not) and the address is stable.
+
+On the **wrkhorse machine**, in `.env` (gitignored) or the environment:
+
+```bash
+WRKHORSE_ALLOW_LAN_MODEL=1
+WRKHORSE_INFERENCE_BASE_URL=http://gpu-box.your-tailnet.ts.net:11434/v1   # or http://192.168.1.40:11434/v1
+WRKHORSE_INFERENCE_MODEL=qwen2.5-coder:7b
+bash scripts/start-home.sh
+```
+
+What the policy accepts (both gateway and worker enforce it, `wrkhorse doctor` reports it):
+
+| Endpoint | Accepted |
+| --- | --- |
+| `127.0.0.1` / `::1`, any port | always |
+| `10/8`, `172.16/12`, `192.168/16`, Tailscale `100.64/10`, IPv6 ULA `fc00::/7` | only with `WRKHORSE_ALLOW_LAN_MODEL=1` |
+| hostnames ending `.local`, `.lan`, `.home.arpa`, `.internal`, `.ts.net` | only with the opt-in **and** only if every resolved address is private; checked at startup |
+| `localhost` | refused (may resolve to `::1` while Ollama listens on `127.0.0.1`); use `127.0.0.1` |
+| public IPs, other hostnames, `169.254.x.x` (cloud metadata), `0.0.0.0` | always refused |
+| Ollama cloud tags `name:cloud`, `name:120b-cloud` | always refused (Ollama forwards them to ollama.com) |
+
+Model servers that require an API key (e.g. vLLM with `--api-key`) are **not** supported in this mode; the worker refuses real inference keys so a cloud key can never be sent by accident.
+
+## Operational notes (things that bite on a laptop)
+
+- **Cold start.** The first request after the model is unloaded reads gigabytes from disk; on a MacBook Air a 7B model can take well over a minute. `start-home.sh` warms the model before accepting requests, and timeouts default to 180 s (worker) / 120 s (`ask_local_model`), max 300 s. Ollama unloads idle models after 5 minutes; set `OLLAMA_KEEP_ALIVE=30m` (or `-1`) on the model machine if remote clients hit cold starts.
+- **Reasoning models** (qwen3, deepseek-r1, gpt-oss) emit `<think>…</think>` first. wrkhorse strips it, but they can spend the whole token budget thinking: set `WRKHORSE_INFERENCE_MAX_TOKENS=4096`. A truncated answer is reported in the worker log as `truncated`, not as a vague failure.
+- **Context window.** Ollama's default context is small (2–4K tokens) and silently truncates longer prompts. That is fine for `sample-add`; raise `OLLAMA_CONTEXT_LENGTH` on the model machine before adding larger tasks.
+- **Small models add prose.** "Here is the diff: ```diff …```" is accepted only when it contains exactly one fenced block; the extracted diff is then validated as strictly as before and only the clean diff is stored.
+- **Sleep.** `start-home.sh` runs `caffeinate -i` so the Mac does not idle-sleep while serving (`WRKHORSE_NO_CAFFEINATE=1` to disable). Closing the lid on battery still sleeps the Mac and drops remote clients. If the model is on another machine, that machine must stay awake too.
+- **Worker failures are visible.** The start script exits if the worker dies at startup, and worker/gateway logs now say *why* a job failed (`ConnectError`, `truncated`, `not a unified diff`) without logging prompts, model text or tokens.
+- **Python.** The start script picks 3.12, 3.13 or 3.11 (in that order); `WRKHORSE_PYTHON=/path/to/python` overrides. Delete `.venv` after a Python upgrade.
+- **Behind the tunnel the rate limit is global**, because every request arrives from `cloudflared` on `127.0.0.1`. With one owner that is acceptable; per-identity limits are future work.
+
 ## Step C. Secure remote MCP access (requires your Cloudflare account)
 
 **This repo now supports Cloudflare Access Managed OAuth assertion verification.** The HTTP gateway can use either (1) a local static bearer for loopback tests **or** (2) a **verified Cloudflare Access JWT** when the Access configuration is set. There is **no fallback to the local bearer in Access mode**. The Cloudflare OAuth flow is performed by Cloudflare Access, not by the wrkhorse application. This still requires the external MCP client to support Cloudflare's OAuth flow and **RFC 8707 resource indicators**.
@@ -102,8 +151,8 @@ bash scripts/start-home.sh
 ## Security and limitations
 
 - **Default worker execution and direct-model chat are disabled.** The home startup intentionally opts into `inference-only` and separately enables text-only `ask_local_model`: it refuses `mode=mock`, never runs tests, never executes the model's proposed code, and accepts only `sample-add`.
-- The local inference-only mode refuses non-loopback URLs, cloud-model tags and real model API keys. Ollama's local OpenAI compatibility ignores the dummy value `ollama-local`.
-- The optional `ask_local_model` MCP tool accepts up to 4096 UTF-8 bytes, returns at most 16 KiB of model text, and permits one in-flight invocation at a time. Its local Ollama URL is fixed and it does not execute instructions, commands, files, test runners or model-written code. This is a direct bounded model call (unlike queued coding fixtures); it is not a general coding agent.
+- The local inference-only mode refuses public/cloud URLs, cloud-model tags (`:cloud`, `-cloud`) and real model API keys. Non-loopback private-network model hosts need the explicit `WRKHORSE_ALLOW_LAN_MODEL=1` opt-in (see Step B2). Local servers ignore the dummy value `ollama-local`.
+- The optional `ask_local_model` MCP tool accepts up to 4096 UTF-8 bytes, returns at most 16 KiB of model text, and permits one in-flight invocation at a time. It uses the same validated local-model URL as the worker and does not execute instructions, commands, files, test runners or model-written code. This is a direct bounded model call (unlike queued coding fixtures); it is not a general coding agent.
 - The gateway requires a high-entropy bearer token **before tool discovery** and rate-limits requests. No token, no tools. Token is stored in `var/mcp-token` (gitignored). Use an appropriate token manager when giving credentials to external clients.
 - The gateway has a request-body cap and a restricted Host/Origin allowlist; the tunnel's public DNS hostname must be explicitly listed via `WRKHORSE_PUBLIC_HOST`. Cloudflare Access is an **additional protective layer**, not automatically configured by this code.
 - No arbitrary file paths, prompt content, repository editing, general command execution, paid GPU allocation, or unattended background scheduling. Queue and worker must stay on the same Mac and share local SQLite.

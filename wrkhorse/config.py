@@ -7,6 +7,14 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from wrkhorse.local_model import (
+    DEFAULT_BASE_URL,
+    DUMMY_API_KEY,
+    LocalModelError,
+    validate_base_url,
+    validate_model_tag,
+)
+
 MIN_TOKEN_LENGTH = 32
 _PLACEHOLDER_PREFIXES = ("replace-with", "changeme")
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
@@ -88,6 +96,9 @@ class GatewaySettings:
     model_chat_enabled: bool
     model_chat_model: str | None
     model_chat_timeout_seconds: float
+    model_chat_base_url: str
+    model_chat_scope: str | None
+    model_max_tokens: int
     rate_limit_per_minute: int
     max_body_bytes: int
     stale_seconds: float
@@ -107,6 +118,8 @@ class WorkerSettings:
     inference_api_key: str | None
     inference_model: str | None
     inference_timeout_seconds: float
+    inference_max_tokens: int = 1024
+    inference_scope: str | None = None
 
     @property
     def artifact_root(self) -> Path:
@@ -117,6 +130,25 @@ def _shared_limits() -> tuple[float, int]:
     stale = _bounded_float("WRKHORSE_CLAIM_STALE_SECONDS", 900, 1, 86400)
     attempts = _bounded_int("WRKHORSE_MAX_ATTEMPTS", 2, 1, 5)
     return stale, attempts
+
+
+def _allow_lan() -> bool:
+    return _env("WRKHORSE_ALLOW_LAN_MODEL") == "1"
+
+
+def _max_tokens() -> int:
+    # Reasoning models (qwen3, deepseek-r1, gpt-oss) spend tokens "thinking"
+    # before the answer; 1024 is often not enough for them.
+    return _bounded_int("WRKHORSE_INFERENCE_MAX_TOKENS", 1024, 64, 8192)
+
+
+def local_model_endpoint(resolve: bool = True) -> tuple[str, str]:
+    """The one validated local-model base URL shared by gateway and worker."""
+    raw = _env("WRKHORSE_INFERENCE_BASE_URL") or DEFAULT_BASE_URL
+    try:
+        return validate_base_url(raw, allow_lan=_allow_lan(), resolve=resolve)
+    except LocalModelError as exc:
+        raise ConfigError(f"WRKHORSE_INFERENCE_BASE_URL: {exc}") from exc
 
 
 def load_gateway_settings(host: str | None = None, port: int | None = None) -> GatewaySettings:
@@ -157,10 +189,13 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
             raise ConfigError("WRKHORSE_ACCESS_AUDIENCE must be an Access application AUD tag")
     chat_enabled = _env("WRKHORSE_MODEL_CHAT_ENABLED") == "1"
     chat_model = _env("WRKHORSE_INFERENCE_MODEL") or None
-    if chat_enabled and (
-        not chat_model or len(chat_model) > 200 or chat_model.endswith(":cloud")
-    ):
-        raise ConfigError("model chat needs a locally downloaded Ollama model tag")
+    chat_base_url, chat_scope = DEFAULT_BASE_URL, None
+    if chat_enabled:
+        try:
+            validate_model_tag(chat_model)
+        except LocalModelError as exc:
+            raise ConfigError(f"model chat needs a locally downloaded model tag: {exc}") from exc
+        chat_base_url, chat_scope = local_model_endpoint()
     stale, attempts = _shared_limits()
     return GatewaySettings(
         token=token,
@@ -174,8 +209,11 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         model_chat_enabled=chat_enabled,
         model_chat_model=chat_model if chat_enabled else None,
         model_chat_timeout_seconds=_bounded_float(
-            "WRKHORSE_MODEL_CHAT_TIMEOUT_SECONDS", 90, 1, 120
+            "WRKHORSE_MODEL_CHAT_TIMEOUT_SECONDS", 90, 1, 300
         ),
+        model_chat_base_url=chat_base_url,
+        model_chat_scope=chat_scope,
+        model_max_tokens=_max_tokens(),
         rate_limit_per_minute=_bounded_int("WRKHORSE_RATE_LIMIT_PER_MINUTE", 60, 1, 600),
         max_body_bytes=65536,
         stale_seconds=stale,
@@ -198,19 +236,24 @@ def load_worker_settings() -> WorkerSettings:
     model = _env("WRKHORSE_INFERENCE_MODEL") or None
     if model is not None and len(model) > 200:
         raise ConfigError("WRKHORSE_INFERENCE_MODEL is too long")
+    scope = None
     if mode == "inference-only":
-        # This deployment mode is intended for a Mac that runs its own
-        # Ollama. Reject all remote inference destinations and :cloud tags.
-        if base_url != "http://127.0.0.1:11434/v1":
+        # Home deployment: the model must run on this machine (loopback) or,
+        # with WRKHORSE_ALLOW_LAN_MODEL=1, on another machine the owner
+        # controls on a private network. Never a cloud endpoint or cloud tag.
+        if not base_url:
             raise ConfigError(
-                "inference-only requires WRKHORSE_INFERENCE_BASE_URL="
-                "http://127.0.0.1:11434/v1"
+                "inference-only requires WRKHORSE_INFERENCE_BASE_URL, e.g. "
+                + DEFAULT_BASE_URL
             )
-        if not model or model.endswith(":cloud"):
-            raise ConfigError("inference-only requires a local Ollama model tag")
-        if api_key not in (None, "ollama-local"):
+        base_url, scope = local_model_endpoint()
+        try:
+            validate_model_tag(model)
+        except LocalModelError as exc:
+            raise ConfigError(f"inference-only requires a local model tag: {exc}") from exc
+        if api_key not in (None, DUMMY_API_KEY):
             raise ConfigError("inference-only refuses a real inference API key")
-        api_key = "ollama-local"  # ignored by local Ollama OpenAI compatibility
+        api_key = DUMMY_API_KEY  # ignored by Ollama / LM Studio / llama.cpp
 
     stale, attempts = _shared_limits()
     return WorkerSettings(
@@ -225,6 +268,8 @@ def load_worker_settings() -> WorkerSettings:
         inference_api_key=api_key,
         inference_model=model,
         inference_timeout_seconds=_bounded_float(
-            "WRKHORSE_INFERENCE_TIMEOUT_SECONDS", 60, 1, 120
+            "WRKHORSE_INFERENCE_TIMEOUT_SECONDS", 60, 1, 300
         ),
+        inference_max_tokens=_max_tokens(),
+        inference_scope=scope,
     )

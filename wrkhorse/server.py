@@ -7,6 +7,7 @@ import re
 import threading
 from urllib.parse import urlsplit
 
+import anyio.to_thread
 import uvicorn
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -16,9 +17,11 @@ from wrkhorse.auth import RateLimiter, bearer_matches
 from wrkhorse.access import AccessVerifier
 from wrkhorse.config import GatewaySettings
 from wrkhorse.inference import InferenceError, request_local_chat
+from wrkhorse.logsetup import get_logger
 from wrkhorse.store import Store, public_result, public_status
 
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
+log = get_logger(__name__)
 
 
 def build_server(settings: GatewaySettings) -> MCPServer:
@@ -64,7 +67,16 @@ def build_server(settings: GatewaySettings) -> MCPServer:
     @mcp.tool()
     def get_project_status() -> dict:
         """Return pilot readiness. Does not run a task."""
-        return store.project_status()
+        status = store.project_status()
+        if settings.model_chat_enabled:
+            status["tools"] = [*status["tools"], "ask_local_model"]
+        # Report where inference runs without leaking a LAN address.
+        status["local_model"] = {
+            "chat_enabled": settings.model_chat_enabled,
+            "model": settings.model_chat_model,
+            "location": settings.model_chat_scope,
+        }
+        return status
 
     if settings.model_chat_enabled:
         # Only the owner-started home script enables this tool. Keep Ollama
@@ -83,15 +95,21 @@ def build_server(settings: GatewaySettings) -> MCPServer:
                         model=settings.model_chat_model or "",
                         prompt=prompt,
                         timeout=settings.model_chat_timeout_seconds,
+                        base_url=settings.model_chat_base_url,
+                        allow_lan=settings.model_chat_scope == "lan",
+                        max_tokens=settings.model_max_tokens,
                     )
                 except (InferenceError, OSError, UnicodeError) as exc:
+                    log.warning("ask_local_model failed: %s (%s)", type(exc).__name__, exc)
                     raise ToolError("local_model_failed") from None
             finally:
                 gate.release()
             return {
                 "model": settings.model_chat_model,
                 "answer": answer,
-                "inference_location": "localhost",
+                "inference_location": (
+                    "localhost" if settings.model_chat_scope == "loopback" else "private-lan"
+                ),
                 "executes_code": False,
                 "files_changed": False,
             }
@@ -147,8 +165,11 @@ class _Guard:
             # Cloudflare Managed OAuth forwards a signed assertion, *not*
             # our locally generated bearer token. Never bypass Access with
             # the local token once Access mode is enabled.
-            allowed = self.access_verifier.verify(
-                _header(scope, "cf-access-jwt-assertion")
+            # JWKS refresh is a blocking HTTPS call (up to 5 s). Keep it off
+            # the event loop so one slow key fetch cannot stall every client.
+            allowed = await anyio.to_thread.run_sync(
+                self.access_verifier.verify,
+                _header(scope, "cf-access-jwt-assertion"),
             )
         else:
             allowed = bearer_matches(_header(scope, "authorization"), self.token)

@@ -28,6 +28,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("demo", help="local trusted demo of the reviewed sample-add fixture")
 
+    doctor = sub.add_parser(
+        "doctor", help="check the local model server is reachable and has the model"
+    )
+    doctor.add_argument("--warm", action="store_true", help="also load the model with one tiny request")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "serve":
@@ -55,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             running.serve_forever()
             return 0
+        if args.command == "doctor":
+            from wrkhorse.doctor import run_doctor
+
+            return run_doctor(warm=args.warm)
         if args.command == "demo":
             from wrkhorse.demo import run_demo
 

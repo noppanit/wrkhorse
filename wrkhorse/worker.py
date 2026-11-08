@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from wrkhorse.config import WorkerSettings
-from wrkhorse.diffutil import DiffError, apply_diff, parse_unified
+from wrkhorse.diffutil import DiffError, apply_diff, parse_unified, strip_fences
 from wrkhorse.executor import run_unittest
 from wrkhorse.fixtures import load_sample, prompt_for
 from wrkhorse.inference import InferenceError, request_diff
@@ -204,6 +204,8 @@ class Worker:
                 diff_text = self._infer(manifest, repo, lease_lost.is_set)
             else:
                 raise DiffError("unknown mode")
+            # Store/return the extracted diff, not the model's prose around it.
+            diff_text = strip_fences(diff_text)
             parsed = parse_unified(diff_text, max_bytes=self.settings.max_diff_bytes)
             if parsed.path not in manifest["allowed_paths"]:
                 raise DiffError("path is not allowed for this task")
@@ -218,6 +220,10 @@ class Worker:
                         workspace, timeout=self.settings.test_timeout_seconds
                     )
         except (DiffError, InferenceError, SandboxError, OSError, UnicodeError) as exc:
+            # Our own messages only (never model text, prompts or keys). Without
+            # this the owner sees "inference_failed" and cannot tell a cold
+            # model, a refused connection and a malformed diff apart.
+            log.warning("job %s: %s (%s)", job_id, type(exc).__name__, exc)
             if isinstance(exc, InferenceError) and str(exc) == "inference is not configured":
                 code = "inference_not_configured"
                 inference_called = False
@@ -323,6 +329,7 @@ class Worker:
             ),
             timeout=self.settings.inference_timeout_seconds,
             should_stop=should_stop,
+            max_tokens=self.settings.inference_max_tokens,
         )
 
     def _store_diff(
