@@ -125,13 +125,16 @@ def _header(scope, name: str) -> str:
 
 
 def _security(settings: GatewaySettings) -> TransportSecuritySettings | None:
-    if settings.host in {"127.0.0.1", "localhost", "::1"}:
+    # Named tunnels forward to a loopback-bound gateway but preserve the
+    # external Host. The MCP SDK's default localhost-only allowlist would
+    # otherwise reject those requests.
+    if not settings.public_host and settings.host in {"127.0.0.1", "localhost", "::1"}:
         return None
     host = settings.public_host or ""
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
-        allowed_hosts=[host, f"{host}:443", f"{host}:*", "127.0.0.1:*", "localhost:*"],
-        allowed_origins=[f"https://{host}", f"http://{host}"],
+        allowed_hosts=[host, f"{host}:443", "127.0.0.1:*", "localhost:*"],
+        allowed_origins=[f"https://{host}"],
     )
 
 
