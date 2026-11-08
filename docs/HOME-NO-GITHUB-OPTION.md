@@ -1,6 +1,8 @@
 # Home MacBook Air connection without a GitHub task bridge
 
-Status: **Architecture proposal only — NOT deployed or tested** (2026-11-07).
+Status: **Historical alternative proposal only — NOT deployed or tested** (2026-11-07).
+
+> **Superseded as the preferred architecture:** The owner subsequently rejected Runpod as a runtime intermediary. Other coding agents should build the **shared, locally hosted MCP server with a secure, authenticated remote-MCP connection** as defined in [LOCAL-MCP-HANDOFF.md](LOCAL-MCP-HANDOFF.md). This document remains a fallback design for situations where a client cannot invoke custom MCP directly.
 
 This route answers the owner's question: **"Can I ask from the existing ChatGPT iPhone app and have my own MacBook Air run a local model without GitHub moving the tasks?"**
 

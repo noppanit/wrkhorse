@@ -1,5 +1,7 @@
 # wrkhorse
 
+**For coding agents (Codex, Grok Bot, Claude, etc.): start with [AGENTS.md](AGENTS.md) and the [local MCP implementation handoff](docs/LOCAL-MCP-HANDOFF.md).** The preferred future architecture runs Ollama + wrkhorse locally on a MacBook Air and lets compatible cloud AI clients connect over authenticated MCP, without GitHub Issues or Runpod as a runtime bridge. The direct home connection is **not yet tested**; the existing ChatGPT Plus iPhone app cannot currently use custom MCP directly.
+
 Local pilot for safe coding tasks and a future multi-agent system. The [full product plan](docs/AI-INFRASTRUCTURE-PLAN.md) remains a proposal. A **bounded ChatGPT → Runpod Serverless model inference** test has succeeded, but the full `wrkhorse` coordinator, Grok Bot, Claude app, and home MacBook connection have not been verified end to end.
 
 | | |
