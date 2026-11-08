@@ -2,6 +2,12 @@
 from __future__ import annotations
 
 import os
+import asyncio
+import time
+from types import SimpleNamespace
+
+import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
 import subprocess
 import tempfile
 import unittest
@@ -10,7 +16,9 @@ from unittest.mock import patch
 
 from wrkhorse.config import ConfigError, load_gateway_settings, load_worker_settings
 from wrkhorse.fixtures import load_sample
-from wrkhorse.server import _security
+from wrkhorse.server import _security, _Guard
+from wrkhorse.access import AccessVerifier
+from wrkhorse.auth import RateLimiter
 from wrkhorse.store import Store, public_result
 from wrkhorse.worker import Worker
 
@@ -117,6 +125,89 @@ class HomeDeploymentTests(unittest.TestCase):
             with _env(Path(raw) / "tasks.sqlite"):
                 gateway = load_gateway_settings()
             self.assertIsNone(_security(gateway))
+
+    def test_cloudflare_access_config_fails_closed(self):
+        audience = "a" * 40
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "q.sqlite"
+            with _env(path, WRKHORSE_PUBLIC_HOST="agent.example.org",
+                      WRKHORSE_ACCESS_TEAM_DOMAIN="my-team.cloudflareaccess.com",
+                      WRKHORSE_ACCESS_AUDIENCE=audience):
+                settings = load_gateway_settings()
+            self.assertEqual(settings.access_audience, audience)
+            self.assertEqual(settings.access_team_domain, "my-team.cloudflareaccess.com")
+            for overrides in (
+                {"WRKHORSE_ACCESS_AUDIENCE": ""},
+                {"WRKHORSE_ACCESS_TEAM_DOMAIN": "evil.example.org"},
+                {"WRKHORSE_PUBLIC_HOST": ""},
+                {"WRKHORSE_ACCESS_TEAM_DOMAIN": "my-team.cloudflareaccess.com.evil.org"},
+            ):
+                with self.subTest(overrides=overrides):
+                    values = dict(
+                        WRKHORSE_PUBLIC_HOST="agent.example.org",
+                        WRKHORSE_ACCESS_TEAM_DOMAIN="my-team.cloudflareaccess.com",
+                        WRKHORSE_ACCESS_AUDIENCE=audience,
+                    )
+                    values.update(overrides)
+                    with _env(path, **values), self.assertRaises(ConfigError):
+                        load_gateway_settings()
+
+    def test_access_jwt_signature_issuer_audience_and_expiry(self):
+        domain = "my-team.cloudflareaccess.com"
+        audience = "a" * 40
+        verifier = AccessVerifier(domain, audience)
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        verifier.client = SimpleNamespace(
+            get_signing_key_from_jwt=lambda _value: SimpleNamespace(key=key.public_key())
+        )
+        now = int(time.time())
+
+        def signed(**overrides):
+            claims = {
+                "iss": "https://" + domain, "aud": audience,
+                "exp": now + 120, "iat": now,
+            }
+            claims.update(overrides)
+            return jwt.encode(claims, key, algorithm="RS256", headers={"kid": "test"})
+
+        valid = signed()
+        self.assertTrue(verifier.verify(valid))
+        self.assertFalse(verifier.verify(signed(aud="wrong-audience")))
+        self.assertFalse(verifier.verify(signed(iss="https://other.cloudflareaccess.com")))
+        self.assertFalse(verifier.verify(signed(exp=now - 120)))
+        self.assertFalse(verifier.verify("bad-jwt"))
+        self.assertFalse(verifier.verify("x" * 8193))
+        other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self.assertFalse(verifier.verify(jwt.encode({
+            "iss": "https://" + domain, "aud": audience,
+            "exp": now + 120, "iat": now,
+        }, other_key, algorithm="RS256", headers={"kid": "forged"})))
+
+    def test_access_mode_never_falls_back_to_local_bearer(self):
+        class Verifier:
+            def verify(self, value):
+                return value == "valid-signed-assertion"
+
+        calls = []
+        emitted = []
+
+        async def app(_scope, _receive, _send):
+            calls.append("yes")
+
+        async def send(message):
+            emitted.append(message)
+
+        gate = _Guard(app, TOKEN, RateLimiter(10, 60), Verifier())
+        scope = {
+            "type": "http", "client": ("127.0.0.1", 1),
+            "headers": [(b"authorization", ("Bearer " + TOKEN).encode())],
+        }
+        asyncio.run(gate(scope, None, send))
+        self.assertFalse(calls)
+        self.assertEqual(emitted[0]["status"], 401)
+        scope["headers"].append((b"cf-access-jwt-assertion", b"valid-signed-assertion"))
+        asyncio.run(gate(scope, None, send))
+        self.assertEqual(calls, ["yes"])
 
     def test_mac_bootstrap_script_parses(self):
         proc = subprocess.run(
