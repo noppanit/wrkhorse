@@ -29,9 +29,9 @@ ollama pull qwen2.5-coder:1.5b
 bash scripts/start-home.sh
 ```
 
-In another Mac terminal: `source .venv/bin/activate && python scripts/probe_home.py --submit`. This tests the authenticated local MCP server and invokes the **local** Ollama model on a fixed safe `sample-add` fixture. It returns a proposed diff; no model-written code is executed or merged.
+In another Mac terminal: `source .venv/bin/activate && python scripts/probe_home.py --ask "Hello from my Mac"` to ask your **local Ollama model** a text question, or `python scripts/probe_home.py --submit` for the fixed safe coding fixture. It returns a proposed diff; no model-written code is executed or merged.
 
-The gateway supports **MCP Streamable HTTP** and two separate auth modes: high-entropy bearer for local/testing or **verified Cloudflare Access JWT** when Cloudflare Managed OAuth is configured with your domain and AUD tag. Never expose the raw Ollama API or the gateway without authenticated access. Different AI apps have different MCP/OAuth support; **the ChatGPT Plus iPhone app does not currently support custom remote MCP connections**. The tunnel does not bypass that product limitation.
+The gateway exposes a bounded text-only `ask_local_model(prompt)` tool, plus four task-queue tools. A compatible AI agent can ask the local model questions, but it cannot execute commands, edit files or run arbitrary agent workflows. The gateway supports **MCP Streamable HTTP** and two separate auth modes: high-entropy bearer for local/testing or **verified Cloudflare Access JWT** when Cloudflare Managed OAuth is configured with your domain and AUD tag. Never expose the raw Ollama API or the gateway without authenticated access. Different AI apps have different MCP/OAuth support; **the ChatGPT Plus iPhone app does not currently support custom remote MCP connections**. The tunnel does not bypass that product limitation.
 
 ## Quickstart
 
