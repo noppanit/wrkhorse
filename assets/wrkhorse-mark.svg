@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-labelledby="title desc">
+<title id="title">Wrkhorse</title><desc id="desc">Minimal line-art horse profile</desc>
+<rect width="160" height="160" rx="32" fill="#101827"/>
+<path d="M35 119C39 81 57 54 88 42L109 24L113 54L133 83C137 90 135 99 128 103L116 108L97 94L87 86C83 100 86 112 95 122" fill="none" stroke="#F8FAFC" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M105 72L111 75" stroke="#7DD3FC" stroke-width="7" stroke-linecap="round"/>
+</svg>
