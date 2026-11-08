@@ -64,7 +64,7 @@ Gateway, worker, and the SQLite file must be on the **same machine**. This slice
 
 | Process | Command | Reads | Does not do |
 | --- | --- | --- | --- |
-| HTTP gateway | `python -m wrkhorse serve` | `WRKHORSE_AUTH_TOKEN`, `WRKHORSE_DB` | call a model, run tests, read the inference key |
+| HTTP gateway | `python -m wrkhorse serve` | `WRKHORSE_AUTH_TOKEN`, `WRKHORSE_DB` | run tests, read a real inference key or execute model code; optional text-only `ask_local_model` calls local Ollama |
 | stdio gateway | `python -m wrkhorse mcp-stdio` | same token and database | run jobs |
 | worker | `python -m wrkhorse worker` | `WRKHORSE_DB`, optional inference settings | read the gateway token |
 
