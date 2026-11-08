@@ -1,13 +1,23 @@
-"""Explicit local demo. It is not the default remote execution mode."""
+"""Explicit local demo. It is not the default remote execution mode.
+
+`run_demo()` exercises the reviewed mock fixture. `run_demo(mode="inference")`
+exercises the same full MCP + worker pipeline in `inference-only` mode against
+a **stub OpenAI-compatible server on 127.0.0.1** — a network-free stand-in for
+local Ollama. It proves the loopback inference path returns a validated
+*proposed diff* and never executes model-generated code.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import anyio
@@ -58,7 +68,55 @@ def _log_text(path: Path, token: str) -> str:
     return text[-4000:]
 
 
-async def _roundtrip(db: Path, token: str, worker: subprocess.Popen[str], log_path: Path) -> dict:
+class _StubChatHandler(BaseHTTPRequestHandler):
+    """Loopback stand-in for an Ollama /v1 endpoint. Returns the fixture diff."""
+
+    def log_message(self, *_args):  # keep the demo log clean
+        return
+
+    def do_POST(self):  # noqa: N802
+        if self.path != "/v1/chat/completions":
+            self.send_response(404)
+            self.end_headers()
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 100_000:
+            self.send_response(413)
+            self.end_headers()
+            return
+        self.rfile.read(length)
+        _HITS["requests"] += 1
+        body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": _MOCK_PATCH,
+                        }
+                    }
+                ]
+            }
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+_HITS = {"requests": 0}
+_MOCK_PATCH = None
+
+
+def _start_stub_server():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StubChatHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+async def _roundtrip(db: Path, token: str, worker: subprocess.Popen[str], log_path: Path, mode: str) -> dict:
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "wrkhorse", "mcp-stdio"],
@@ -79,7 +137,7 @@ async def _roundtrip(db: Path, token: str, worker: subprocess.Popen[str], log_pa
             submitted = _payload(
                 await session.call_tool(
                     "submit_task",
-                    {"task_name": "sample-add", "mode": "mock"},
+                    {"task_name": "sample-add", "mode": mode},
                 )
             )
             job_id = submitted["job_id"]
@@ -127,7 +185,9 @@ def _wait_for_worker(
     )
 
 
-def run_demo() -> str:
+def run_demo(mode: str = "mock") -> str:
+    if mode not in {"mock", "inference"}:
+        raise ValueError("demo mode must be mock or inference")
     import secrets
 
     _, expected, _ = load_sample()
@@ -139,17 +199,35 @@ def run_demo() -> str:
     token = secrets.token_urlsafe(32)
     log_path = demo_dir / "worker.log"
     log_handle = log_path.open("w", encoding="utf-8")
+
+    stub_server = None
+    stub_thread = None
+    worker_env = {
+        "HOME": str(demo_dir),
+        "WRKHORSE_DB": str(db),
+        "WRKHORSE_EXECUTION_MODE": "trusted-local-demo",
+        "WRKHORSE_POLL_SECONDS": "0.05",
+    }
+    if mode == "inference":
+        # Network-free: a stub OpenAI-compatible server on a random loopback
+        # port stands in for local Ollama. inference-only mode refuses real
+        # API keys, so none is set; config supplies its own dummy value.
+        global _HITS, _MOCK_PATCH
+        _HITS = {"requests": 0}
+        _MOCK_PATCH = expected
+        stub_server, stub_thread = _start_stub_server()
+        port = stub_server.server_address[1]
+        worker_env.update(
+            {
+                "WRKHORSE_EXECUTION_MODE": "inference-only",
+                "WRKHORSE_INFERENCE_BASE_URL": f"http://127.0.0.1:{port}/v1",
+                "WRKHORSE_INFERENCE_MODEL": "qwen2.5-coder:1.5b",
+            }
+        )
     worker = subprocess.Popen(
         [sys.executable, "-m", "wrkhorse", "worker"],
         cwd=REPO_ROOT,
-        env=_child_env(
-            {
-                "HOME": str(demo_dir),
-                "WRKHORSE_DB": str(db),
-                "WRKHORSE_EXECUTION_MODE": "trusted-local-demo",
-                "WRKHORSE_POLL_SECONDS": "0.05",
-            }
-        ),
+        env=_child_env(worker_env),
         stdin=subprocess.DEVNULL,
         stdout=log_handle,
         stderr=subprocess.STDOUT,
@@ -157,7 +235,7 @@ def run_demo() -> str:
     )
     try:
         _wait_for_worker(db, worker, log_path, token)
-        result = asyncio.run(_roundtrip(db, token, worker, log_path))
+        result = asyncio.run(_roundtrip(db, token, worker, log_path, mode))
     except RuntimeError:
         raise
     except Exception as exc:
@@ -170,35 +248,62 @@ def run_demo() -> str:
             worker.kill()
             worker.wait(timeout=5)
         log_handle.close()
+        if stub_server is not None:
+            stub_server.shutdown()
+            stub_server.server_close()
+            stub_thread.join(timeout=5)
     body = result.get("result") or {}
     diff = body.get("diff") or ""
-    if result.get("status") != "succeeded" or body.get("tests_passed") is not True:
-        log_text = log_path.read_text(encoding="utf-8", errors="replace")
-        log_text = log_text.replace(token, "[redacted]")
-        raise RuntimeError(
-            "demo did not pass the fixture\n"
-            + log_text[-2000:]
-            + "\n"
-            + str({key: result.get(key) for key in ("status", "error")})
-        )
-    if diff != expected:
-        raise RuntimeError("demo diff did not match the reviewed fixture patch")
-    output = body.get("test_output") or ""
+    if mode == "mock":
+        if result.get("status") != "succeeded" or body.get("tests_passed") is not True:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+            log_text = log_text.replace(token, "[redacted]")
+            raise RuntimeError(
+                "demo did not pass the fixture\n"
+                + log_text[-2000:]
+                + "\n"
+                + str({key: result.get(key) for key in ("status", "error")})
+            )
+        if diff != expected:
+            raise RuntimeError("demo diff did not match the reviewed fixture patch")
+        status, tests_ran, tests_passed = result["status"], "true", "true"
+        inference_called = "false"
+        output = body.get("test_output") or ""
+    else:
+        # Inference-only: the result is a validated proposed diff. Tests are
+        # never run and model-generated code is never executed.
+        if result.get("status") != "diff_ready" or diff != expected:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+            log_text = log_text.replace(token, "[redacted]")
+            raise RuntimeError(
+                "inference demo did not return the validated fixture diff\n"
+                + log_text[-2000:]
+                + "\n"
+                + str({key: result.get(key) for key in ("status", "error")})
+            )
+        if body.get("tests_ran") is not False or body.get("executes_model_generated_code") is not False:
+            raise RuntimeError("inference demo must not run tests or execute model code")
+        if _HITS["requests"] != 1:
+            raise RuntimeError(f"stub model server received {_HITS['requests']} requests, expected 1")
+        status, tests_ran, tests_passed = result["status"], "false", "n/a"
+        inference_called = "true"
+        output = "(tests not run in inference mode: diff is a proposal only)"
     lines = [
-        "slice: local trusted demo (not a remote connector and not a GPU run)",
+        f"slice: local {'inference (stub Ollama on 127.0.0.1, not a real model and not a remote connector)' if mode == 'inference' else 'trusted demo (not a remote connector and not a GPU run)'}",
         "task_name: sample-add",
-        "mode: mock",
-        f"status: {result['status']}",
-        "tests_ran: true",
-        "tests_passed: true",
-        "inference_called: false",
+        f"mode: {mode}",
+        f"status: {status}",
+        f"tests_ran: {tests_ran}",
+        f"tests_passed: {tests_passed}",
+        f"inference_called: {inference_called}",
         "executes_model_generated_code: false",
         f"tools: {', '.join(result['tools'])}",
         "diff:",
         diff.rstrip("\n"),
         "test_output:",
         output.rstrip("\n"),
-        f"artifact: var/demo/{body.get('artifact_dir')}/diff.patch",
-        "",
     ]
+    if body.get("artifact_dir"):
+        lines.append(f"artifact: var/demo/{body.get('artifact_dir')}/diff.patch")
+    lines.append("")
     return "\n".join(lines)

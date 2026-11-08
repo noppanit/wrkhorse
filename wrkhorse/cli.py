@@ -26,7 +26,12 @@ def main(argv: list[str] | None = None) -> int:
     worker = sub.add_parser("worker", help="claim jobs from the shared SQLite database")
     worker.add_argument("--once", action="store_true")
 
-    sub.add_parser("demo", help="local trusted demo of the reviewed sample-add fixture")
+    demo = sub.add_parser("demo", help="local trusted demo of the reviewed sample-add fixture")
+    demo.add_argument(
+        "--inference",
+        action="store_true",
+        help="exercise the inference-only worker against a stub loopback model server (network-free)",
+    )
 
     doctor = sub.add_parser(
         "doctor", help="check the local model server is reachable and has the model"
@@ -78,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "demo":
             from wrkhorse.demo import run_demo
 
-            print(run_demo(), end="")
+            print(run_demo(mode="inference" if args.inference else "mock"), end="")
             return 0
     except (ConfigError, RuntimeError, ValueError, OSError) as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
