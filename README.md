@@ -14,6 +14,8 @@ Local pilot for safe coding tasks and a future multi-agent system. The [full pro
 
 Connection setup and budget status (2026-11-07): [docs/CONNECTIONS-2026-11-07.md](docs/CONNECTIONS-2026-11-07.md). ChatGPT → Runpod completed coding fixture pilot: [docs/CHATGPT-RUNPOD-PILOT.md](docs/CHATGPT-RUNPOD-PILOT.md). **Home MacBook Air routes:** [GitHub issue bridge](docs/HOME-MACBOOK-PILOT.md) or [no-GitHub Runpod relay + authenticated tunnel (proposal only)](docs/HOME-NO-GITHUB-OPTION.md).
 
+**Grok Bot-first local checkout + Pi/Qwen pilot (8GB Mac):** [docs/GROK-BOT-LOCAL-PI-PLAN.md](docs/GROK-BOT-LOCAL-PI-PLAN.md). Try Grok Bot's built-in approved local command execution before building a Cloudflare MCP gateway; neither path has yet been exercised on the owner's Mac.
+
 Details: [docs/READINESS.md](docs/READINESS.md), [docs/DECISIONS.md](docs/DECISIONS.md), [docs/GROK-BOT.md](docs/GROK-BOT.md), [docs/RUNPOD.md](docs/RUNPOD.md).
 
 ## Deploy the local model on your MacBook Air
