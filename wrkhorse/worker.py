@@ -15,6 +15,7 @@ from wrkhorse.diffutil import DiffError, apply_diff, parse_unified, strip_fences
 from wrkhorse.executor import run_unittest
 from wrkhorse.fixtures import load_sample, prompt_for
 from wrkhorse.inference import InferenceError, request_diff
+from wrkhorse.model_router import load_router
 from wrkhorse.logsetup import get_logger
 from wrkhorse.sandbox import SandboxError, copy_tree
 from wrkhorse.store import Store, is_busy
@@ -316,21 +317,58 @@ class Worker:
             and self.settings.inference_model
         ):
             raise InferenceError("inference is not configured")
-        return request_diff(
-            base_url=self.settings.inference_base_url,
-            api_key=self.settings.inference_api_key,
-            model=self.settings.inference_model,
-            prompt=(
-                prompt_for(manifest, repo)
-                + "\nThis original Python file has EXACTLY TWO lines. "
-                + "For the one-line replacement, use a counted hunk "
-                + "@@ -1,2 +1,2 @@ with one context line, one removed "
-                + "line and one added line. Return no markdown fences."
-            ),
-            timeout=self.settings.inference_timeout_seconds,
-            should_stop=should_stop,
-            max_tokens=self.settings.inference_max_tokens,
+        # Preserve the historical trusted-local-demo endpoint behavior.
+        # Router policy applies only to the home inference-only worker.
+        if self.settings.execution_mode != "inference-only":
+            return request_diff(
+                base_url=self.settings.inference_base_url,
+                api_key=self.settings.inference_api_key,
+                model=self.settings.inference_model,
+                prompt=(
+                    prompt_for(manifest, repo)
+                    + "\nThis original Python file has EXACTLY TWO lines. "
+                    + "For the one-line replacement, use a counted hunk "
+                    + "@@ -1,2 +1,2 @@ with one context line, one removed "
+                    + "line and one added line. Return no markdown fences."
+                ),
+                timeout=self.settings.inference_timeout_seconds,
+                should_stop=should_stop,
+                max_tokens=self.settings.inference_max_tokens,
+            )
+        router = load_router(
+            local_url=self.settings.inference_base_url,
+            local_model=self.settings.inference_model,
+            allow_lan=self.settings.inference_scope == "lan",
         )
+        prompt = (
+            prompt_for(manifest, repo)
+            + "\nThis original Python file has EXACTLY TWO lines. "
+            + "For the one-line replacement, use a counted hunk "
+            + "@@ -1,2 +1,2 @@ with one context line, one removed "
+            + "line and one added line. Return no markdown fences."
+        )
+        last_error = None
+        for route in router.candidates("coding"):
+            if should_stop():
+                raise InferenceError("inference lease lost")
+            try:
+                return request_diff(
+                    base_url=route.base_url,
+                    api_key=self.settings.inference_api_key,
+                    model=route.model,
+                    prompt=prompt,
+                    timeout=self.settings.inference_timeout_seconds,
+                    should_stop=should_stop,
+                    max_tokens=self.settings.inference_max_tokens,
+                )
+            except InferenceError as exc:
+                last_error = exc
+                if should_stop():
+                    raise
+                # Automatic cloud -> local fallback, never retry the paid
+                # endpoint. Errors are sanitized by the inference client.
+                continue
+        raise last_error or InferenceError("no inference route available")
 
     def _store_diff(
         self, job_id: str, attempt: int, diff_text: str, test_output: str | None

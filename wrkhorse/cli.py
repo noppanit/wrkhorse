@@ -33,8 +33,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     doctor.add_argument("--warm", action="store_true", help="also load the model with one tiny request")
 
+    setup = sub.add_parser("init", help="initialize private user configuration without downloads")
+    setup.add_argument("--model", default="qwen2.5-coder:1.5b")
+    startup = sub.add_parser("start", help="run the installed local MCP gateway and worker")
+    startup.add_argument("--check", action="store_true", help="check Ollama without starting services")
+
     args = parser.parse_args(argv)
     try:
+        if args.command == "init":
+            from wrkhorse.installer import init
+            return init(model=args.model)
+        if args.command == "start":
+            from wrkhorse.installer import start
+            return start(check=args.check)
         if args.command == "serve":
             settings = load_gateway_settings(host=args.host, port=args.port)
             get_logger(__name__).info("listening on %s", public_mcp_url(settings))
@@ -69,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
 
             print(run_demo(), end="")
             return 0
-    except ConfigError as exc:
+    except (ConfigError, RuntimeError, ValueError, OSError) as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
     return 2
