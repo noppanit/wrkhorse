@@ -83,6 +83,8 @@ class GatewaySettings:
     port: int
     allow_public_bind: bool
     public_host: str | None
+    access_team_domain: str | None
+    access_audience: str | None
     rate_limit_per_minute: int
     max_body_bytes: int
     stale_seconds: float
@@ -135,6 +137,21 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         r"[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?", public_host
     ):
         raise ConfigError("WRKHORSE_PUBLIC_HOST must be a bare DNS hostname")
+    team_domain = _env("WRKHORSE_ACCESS_TEAM_DOMAIN") or None
+    audience = _env("WRKHORSE_ACCESS_AUDIENCE") or None
+    if bool(team_domain) != bool(audience):
+        raise ConfigError("WRKHORSE_ACCESS_TEAM_DOMAIN and WRKHORSE_ACCESS_AUDIENCE must both be set")
+    if team_domain is not None:
+        # Only pinned, trusted Cloudflare Access JWKS endpoints are permitted.
+        if not public_host:
+            raise ConfigError("WRKHORSE_PUBLIC_HOST is required with Cloudflare Access")
+        if not re.fullmatch(
+            r"[a-zA-Z0-9][a-zA-Z0-9.-]{0,180}\\.cloudflareaccess\\.com",
+            team_domain,
+        ):
+            raise ConfigError("WRKHORSE_ACCESS_TEAM_DOMAIN must be your Cloudflare Access domain")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", audience or ""):
+            raise ConfigError("WRKHORSE_ACCESS_AUDIENCE must be an Access application AUD tag")
     stale, attempts = _shared_limits()
     return GatewaySettings(
         token=token,
@@ -143,6 +160,8 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         port=chosen_port,
         allow_public_bind=allow_public,
         public_host=public_host,
+        access_team_domain=team_domain,
+        access_audience=audience,
         rate_limit_per_minute=_bounded_int("WRKHORSE_RATE_LIMIT_PER_MINUTE", 60, 1, 600),
         max_body_bytes=65536,
         stale_seconds=stale,
