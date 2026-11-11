@@ -6,6 +6,8 @@
 
 This document is an **implementation brief**, not evidence of a deployed service. Coding agents should read [AGENTS.md](../AGENTS.md) first and work in small reviewable PRs.
 
+Read-only `list_files` and `read_file` are now implemented behind `WRKHORSE_FILES_ROOT` (unset = disabled, never `/`). They are covered by unit tests and have not been called from a live cloud client. Do not treat that as permission to add write or shell tools.
+
 ## 1. Architecture to implement
 
 ```text

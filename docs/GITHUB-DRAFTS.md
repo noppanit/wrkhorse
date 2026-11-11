@@ -2,6 +2,8 @@
 
 **Status:** Implemented in the repository, with network-free tests; **not yet run on the owner's Mac or connected to a real GitHub draft through Grok Bot.** This extension is *opt-in*. The existing local-model MCP connection remains unchanged until you enable the GitHub tools.
 
+Local workspace reads use the same MCP name `read_file` when `WRKHORSE_FILES_ROOT` is set. In that configuration the GitHub draft reader is registered as `read_draft_file` so the two tools do not collide. With the files root unset, GitHub drafts keep `read_file`.
+
 ## Goal and security model
 
 The owner has successfully connected **wrkhorse → Grok Bot** and wants Pi-agent-style `read`, `write`, and `edit` abilities for drafting posts in GitHub. We borrow Pi's minimal tool design and exact unique-string edits, but **do not enable Pi's unrestricted `bash` tool**.
