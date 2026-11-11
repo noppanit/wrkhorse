@@ -704,6 +704,8 @@ class GatewayTests(unittest.TestCase):
                     "get_project_status",
                     "get_task_result",
                     "get_task_status",
+                    "list_files",
+                    "read_file",
                     "submit_task",
                 ],
             )

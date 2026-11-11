@@ -43,6 +43,10 @@ The next scoped feature is implemented in [docs/GITHUB-DRAFTS.md](docs/GITHUB-DR
 
 Unit and local MCP integration tests exercise these boundaries; the first *live* GitHub draft through Grok Bot is still unverified. Always confirm the owner is intentionally opting into this access before trying it on a real repository. Prefer a private content repository to avoid publicly exposing unfinished posts.
 
+## Read-only local files
+
+The gateway also exposes `list_files` and `read_file` for text on the machine wrkhorse runs on. The root is `WRKHORSE_FILES_ROOT`. Unset means the tools report that they are disabled; they do not default to `/`. Paths stay inside the resolved root, and secret-looking paths are blocked. These tools never write or execute. When GitHub drafts are enabled at the same time, the draft reader is `read_draft_file` and the local reader keeps `read_file`. This is unit-tested only; it has not been verified on the owner's Mac.
+
 ## Agent task order
 
 1. Inspect existing server/auth/config/tests and run `make test` before editing. Do not assume the current bearer-token MCP endpoint already satisfies external client OAuth requirements.

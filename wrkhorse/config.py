@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from wrkhorse.local_files import FilesConfigError, parse_files_root
 from wrkhorse.model_router import load_router, RouterError
 from wrkhorse.local_model import (
     DEFAULT_BASE_URL,
@@ -106,6 +107,7 @@ class GatewaySettings:
     max_attempts: int
     github_drafts_repo: str | None = None
     github_drafts_token: str | None = None
+    files_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -221,6 +223,10 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
             raise ConfigError("WRKHORSE_GITHUB_TOKEN requires a fine-grained repository token")
         if draft_token.lower().startswith(("replace-", "changeme")):
             raise ConfigError("WRKHORSE_GITHUB_TOKEN is a placeholder")
+    try:
+        root = parse_files_root(os.environ.get("WRKHORSE_FILES_ROOT"))
+    except FilesConfigError as exc:
+        raise ConfigError(str(exc)) from exc
     stale, attempts = _shared_limits()
     return GatewaySettings(
         token=token,
@@ -245,6 +251,7 @@ def load_gateway_settings(host: str | None = None, port: int | None = None) -> G
         max_attempts=attempts,
         github_drafts_repo=draft_repo if github_enabled else None,
         github_drafts_token=draft_token if github_enabled else None,
+        files_root=root,
     )
 
 
